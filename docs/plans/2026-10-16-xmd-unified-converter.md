@@ -1686,7 +1686,7 @@ from xmd.backends.lake_doc import (
     html_to_markdown,
     replace_latex_images,
 )
-from xmd.model import Category, FileEntry
+from xmd.model import Category, FileEntry, Task
 
 
 def _card(src: str, code: str) -> str:
@@ -1695,8 +1695,10 @@ def _card(src: str, code: str) -> str:
 
 
 def _task(tmp_path, meta=None):
-    return FileEntry(Path("b/标题"), tmp_path / "x.json", Category.LAKE_DOC,
-                     meta={"title": "标题", "download_image": False, **(meta or {})})
+    """构造 lake_doc 任务（后端协议读 task.entry.meta）。"""
+    entry = FileEntry(Path("b/标题"), tmp_path / "x.json", Category.LAKE_DOC,
+                      meta={"title": "标题", "download_image": False, **(meta or {})})
+    return Task(entry, tmp_path / "标题.md", tmp_path / "标题.assets", False)
 
 
 def test_extract_latex_from_asl():
@@ -1949,7 +1951,7 @@ import json
 import zlib
 
 from xmd.backends.lake_sheet import LakeSheetBackend, parse_lakesheet, rows_to_sheet_plus_format
-from xmd.model import Category, FileEntry
+from xmd.model import Category, FileEntry, Task
 
 
 def _body(data: dict) -> str:
@@ -1966,8 +1968,10 @@ def _write_sheet(tmp_path, data, name="s.json"):
 
 
 def _task(src, output, fmt="csv", title="表"):
-    return FileEntry(Path("b/表"), src, Category.LAKE_SHEET,
-                     meta={"title": title, "sheet_format": fmt})
+    """构造 lake_sheet 任务（后端读 task.output_md 与 task.entry.meta）。"""
+    entry = FileEntry(Path("b/表"), src, Category.LAKE_SHEET,
+                      meta={"title": title, "sheet_format": fmt})
+    return Task(entry, output, output.parent / (output.stem + ".assets"), False)
 
 
 DATA = {"data": {
@@ -2089,7 +2093,7 @@ class LakeSheetBackend:
         rows = parse_lakesheet(body)
         if not rows:
             raise ConvertError("表格数据解析失败或为空")
-        out = task.output_path
+        out = task.output_md
         out.parent.mkdir(parents=True, exist_ok=True)
         if task.entry.meta.get("sheet_format", "csv") == "sheet":
             content = rows_to_sheet_plus_format(rows, task.entry.meta.get("title", ""), str(out))
