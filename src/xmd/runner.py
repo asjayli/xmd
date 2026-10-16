@@ -1,0 +1,314 @@
+"""批量调度：冲突解析、worker 单例、单文件流水线。
+
+编排（run/_dispatch）在 Phase 7 追加。
+后端可插拔：Ctx.backend 选 markitdown|pdf-inspector|mineru|auto。
+MinerU 额度即停：_dispatch 识别 MINERU_DAILY_LIMIT 后停止提交剩余（贯彻不用优先额度）。
+容器展开（.lakebook）由 Task 13 集成：expanders 在主进程展开为虚拟 FileEntry。
+"""
+from __future__ import annotations
+
+import csv
+import json
+import logging
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
+from pathlib import Path
+
+from xmd.backends.auto import AutoConverter
+from xmd.backends.markitdown_backend import MarkdownConverter
+from xmd.backends.mineru import MinerUConverter
+from xmd.backends.pdf_inspector import PdfInspectorConverter
+from xmd.classifier import Category
+from xmd.image_extractor import ImageError, extract_images
+from xmd.model import (
+    ConvertError,
+    Converter,
+    FileEntry,
+    Result,
+    Task,
+)
+from xmd.writer import assets_dir_for, build_output_path, copy_skip, write_markdown
+
+# Result/Task 自 model 导入并 re-export，保持 runner 对外稳定接口
+__all__ = ["Ctx", "Result", "Task", "preprocess", "process_one", "run"]
+
+
+@dataclass(frozen=True)
+class Ctx:
+    force: bool
+    min_chars: int
+    max_pdf_mb: int = 20
+    backend: str = "markitdown"          # markitdown|pdf-inspector|mineru|auto
+    backend_opts: dict | None = None     # mineru/auto: {token,api,model,language,rate_per_min,...}
+    no_image: bool = False               # True=PDF 不补抽图（语雀下载开关在任务 meta）
+
+
+def preprocess(files: list[FileEntry], output_root: Path) -> list[Task]:
+    """镜像路径计算 + 冲突去重：同 output 且来源不同 → 加 __<category>[__N] 后缀。"""
+    used: dict[Path, Path] = {}   # output -> 源 abs_path
+    tasks: list[Task] = []
+    for e in files:
+        out = build_output_path(e, output_root)
+        ext = out.suffix   # .md / .csv / 原样复制文件的后缀
+        collision = False
+        if out in used and used[out] != e.abs_path:
+            collision = True
+            base = out.with_suffix("")  # /out/子/同名
+            candidate = base.parent / f"{base.name}__{e.category.value}{ext}"
+            n = 2
+            while candidate in used:
+                candidate = base.parent / f"{base.name}__{e.category.value}__{n}{ext}"
+                n += 1
+            out = candidate
+        used[out] = e.abs_path
+        tasks.append(Task(e, out, assets_dir_for(out), collision))
+    return tasks
+
+
+# worker 全局单例（经 _worker_init 建立；_get_converter 供单测惰性创建）
+_WORKER_CTX: Ctx | None = None
+_WORKER_CONV: Converter | None = None
+
+
+def _build_converter(ctx: Ctx) -> Converter:
+    """按 ctx.backend 实例化后端（延迟 import 避免循环/可选依赖）。"""
+    if ctx.backend == "auto":
+        return AutoConverter(ctx.backend_opts)
+    if ctx.backend == "mineru":
+        return MinerUConverter(**(ctx.backend_opts or {}))
+    if ctx.backend == "pdf-inspector":
+        return PdfInspectorConverter()
+    return MarkdownConverter()
+
+
+def _get_converter() -> Converter:
+    global _WORKER_CONV
+    if _WORKER_CONV is None:
+        assert _WORKER_CTX is not None, "worker 未初始化"
+        _WORKER_CONV = _build_converter(_WORKER_CTX)
+    return _WORKER_CONV
+
+
+def _worker_init(ctx: Ctx) -> None:
+    global _WORKER_CTX, _WORKER_CONV
+    _WORKER_CTX = ctx
+    _WORKER_CONV = _build_converter(ctx)
+    logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+
+def _is_pdf(category: Category) -> bool:
+    return category in (Category.NOTE_PDF, Category.PDF)
+
+
+def _size_mb(path: Path) -> float:
+    try:
+        return path.stat().st_size / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def process_one(task: Task) -> Result:
+    """单文件完整流水线（worker 进程内）。ctx 取 worker 全局。"""
+    assert _WORKER_CTX is not None, "worker 未初始化"
+    ctx = _WORKER_CTX
+    rel = str(task.entry.rel_path)
+    entry = task.entry
+
+    # 续传：虚拟任务（lake_*）用归档 mtime，散文件现场 stat
+    if entry.mtime is not None:
+        src_mtime = entry.mtime
+    else:
+        src_mtime = entry.abs_path.stat().st_mtime
+    if (not ctx.force
+            and task.output_md.exists()
+            and task.output_md.stat().st_mtime >= src_mtime):
+        return Result(rel, "skipped", 0, 0, None)
+
+    if entry.category is Category.SKIP:
+        try:
+            copy_skip(entry.abs_path, task.output_md)
+            return Result(rel, "copied", 0, 0, None)
+        except Exception as e:
+            return Result(rel, "error", 0, 0, str(e))
+
+    title = task.output_md.stem
+    try:
+        cres = _get_converter().convert(entry.abs_path, task.assets_dir, task)
+    except ConvertError as e:
+        return Result(rel, "error", 0, 0, str(e))
+
+    # 后端已自行落盘完整输出（lake_sheet csv/sheet-plus）→ 跳过写盘与质量判定
+    if cres.handled_output:
+        status = "collision" if task.collision else "ok"
+        return Result(rel, status, 0, 0, None)
+
+    body = cres.body
+    image_refs = list(cres.image_refs)
+    if (not cres.handled_images) and _is_pdf(entry.category) \
+            and not ctx.no_image \
+            and _size_mb(entry.abs_path) <= ctx.max_pdf_mb:
+        try:
+            imgs = extract_images(entry.abs_path, task.assets_dir, force=ctx.force)
+            image_refs += [im.rel_ref for im in imgs]
+        except ImageError:
+            pass  # 降级：仅文本
+
+    write_markdown(task.output_md, title, body, image_refs)
+
+    stripped = body.strip()
+    if stripped == "":
+        return Result(rel, "empty", 0, len(image_refs), None)
+    status = "ok"
+    if len(stripped) < ctx.min_chars and not image_refs:
+        status = "need_review"
+    if task.collision and status == "ok":
+        status = "collision"
+    return Result(rel, status, len(stripped), len(image_refs), None)
+
+
+# ---- 编排（Phase 7）----
+
+# MinerU 每日免费额度耗尽标记（见 xmd.backends.mineru.DAILY_LIMIT_MARK）
+_DAILY_LIMIT_MARK = "MINERU_DAILY_LIMIT"
+
+
+def _is_daily_limit(r: Result) -> bool:
+    """检测 Result 是否为 MinerU 每日额度耗尽（触发 _dispatch 停止提交剩余）。"""
+    return bool(r.error and _DAILY_LIMIT_MARK in r.error)
+
+
+def _append_log(output_root: Path, r: Result) -> None:
+    with (output_root / "convert.log").open("a", encoding="utf-8") as f:
+        f.write(f"{r.rel_path} | {r.status} | {r.chars} | {r.images} | {r.error or ''}\n")
+
+
+def _write_need_review(output_root: Path, results: list[Result]) -> None:
+    rows = [r for r in results if r.status in ("need_review", "empty", "error", "crash")]
+    with (output_root / "need-review.csv").open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["rel_path", "chars", "status"])
+        for r in rows:
+            w.writerow([r.rel_path, r.chars, r.status])
+
+
+def _summarize(results: list[Result], duration: float) -> dict:
+    s = {"total": len(results), "ok": 0, "skipped": 0, "error": 0,
+         "need_review": 0, "copied": 0, "collision": 0, "empty": 0,
+         "crash": 0, "images_total": 0, "duration_sec": round(duration, 2)}
+    for r in results:
+        if r.status in s:
+            s[r.status] += 1
+        s["images_total"] += r.images
+    return s
+
+
+def _dispatch(tasks: list[Task], ctx: Ctx, jobs: int, output_root: Path) -> list[Result]:
+    results: list[Result] = []
+    done_keys: set[str] = set()
+    pending = list(tasks)
+    daily_stop = False
+    while pending:
+        try:
+            with ProcessPoolExecutor(max_workers=jobs, initializer=_worker_init,
+                                     initargs=(ctx,)) as pool:
+                fut_map = {pool.submit(process_one, t): t for t in pending}
+                for fut in as_completed(fut_map):
+                    t = fut_map[fut]
+                    rel = str(t.entry.rel_path)
+                    if daily_stop:
+                        # 额度上限后：已跑完的取真实结果（不覆盖成 need_review）；
+                        # 未跑/被取消的标 need_review 待续传
+                        if fut.cancelled():
+                            r = Result(rel, "need_review", 0, 0, "额度上限跳过，待续传")
+                        else:
+                            try:
+                                r = fut.result()
+                            except Exception as e:
+                                r = Result(rel, "crash", 0, 0, f"{type(e).__name__}: {e}")
+                        results.append(r)
+                        _append_log(output_root, r)
+                        done_keys.add(rel)
+                        continue
+                    try:
+                        r = fut.result()
+                    except BrokenProcessPool:
+                        raise
+                    except Exception as e:
+                        r = Result(rel, "crash", 0, 0, f"{type(e).__name__}: {e}")
+                    results.append(r)
+                    _append_log(output_root, r)
+                    done_keys.add(rel)
+                    if _is_daily_limit(r):
+                        # 触达 MinerU 每日免费上限 → 停止提交剩余，避免无效消耗
+                        daily_stop = True
+                        for f2 in fut_map:
+                            if f2 is not fut and not f2.done():
+                                f2.cancel()
+        except BrokenProcessPool:
+            if daily_stop:
+                # 当前控制流下不可达（daily_stop 分支内 except Exception 已把 BPP 记为
+                # crash 不外逸），纯防御：若将来此路径可达，补记剩余未记录的防丢失
+                for t in pending:
+                    rel = str(t.entry.rel_path)
+                    if rel not in done_keys:
+                        r = Result(rel, "need_review", 0, 0, "额度上限跳过，待续传")
+                        results.append(r)
+                        _append_log(output_root, r)
+                        done_keys.add(rel)
+                break
+            remaining = [t for t in pending if str(t.entry.rel_path) not in done_keys]
+            if not remaining:
+                break
+            crash_r = Result(str(remaining[0].entry.rel_path), "crash", 0, 0,
+                             "BrokenProcessPool")
+            results.append(crash_r)
+            _append_log(output_root, crash_r)
+            pending = remaining[1:]
+            continue
+        break
+    return results
+
+
+def run(source, output: Path, jobs: int = 4,
+        force: bool = False, min_chars: int = 50, max_pdf_mb: int = 20,
+        backend: str = "markitdown", backend_opts: dict | None = None,
+        only: set[str] | None = None, no_image: bool = False,
+        convert_sheets: bool = True, sheet_format: str = "csv") -> dict:
+    """source 支持单 Path 或 Path 列表（混合文件/目录输入）。
+
+    容器展开集成由 Task 13 加入：当前实现遍历输入、镜像目录、preprocess、
+    dispatch、报告（与源工程 run 行为一致，LAKEBOOK 条目暂按 SKIP 之外逻辑
+    走 markitdown，Task 13 接管）。
+    """
+    inputs = list(source) if isinstance(source, (list, tuple)) else [source]
+    inputs = [Path(i) for i in inputs]
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "convert.log").write_text("", encoding="utf-8")  # 清空本轮日志
+
+    from xmd.walker import scan_input
+    walked_files: list[FileEntry] = []
+    dirs: list[Path] = []
+    for inp in inputs:
+        w = scan_input(inp)
+        walked_files += w.files
+        dirs += w.dirs
+    for d in dirs:  # 镜像全部目录（含空目录）
+        (output / d).mkdir(parents=True, exist_ok=True)
+
+    tasks = preprocess(walked_files, output)
+    if only is not None:   # --retry-review：仅处理指定 rel_path 子集
+        tasks = [t for t in tasks if str(t.entry.rel_path) in only]
+    ctx = Ctx(force=force, min_chars=min_chars, max_pdf_mb=max_pdf_mb,
+              backend=backend, backend_opts=backend_opts, no_image=no_image)
+    start = time.perf_counter()
+    results = _dispatch(tasks, ctx, jobs, output)
+    duration = time.perf_counter() - start
+
+    _write_need_review(output, results)
+    summary = _summarize(results, duration)
+    (output / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
