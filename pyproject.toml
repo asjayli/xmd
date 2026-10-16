@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "任意源（散文件/有道云笔记导出/语雀 .lakebook）→ Markdown 批量转换"
 requires-python = ">=3.11"
 dependencies = [
-  "markitdown>=0.1.7",
+  "markitdown[pdf]>=0.1.7",  # pdf extra（pdfminer.six 等）用于 PDF 转换器
   "openpyxl>=3.1",
   "python-pptx>=0.6.23",
   "python-docx>=1.1",
