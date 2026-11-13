@@ -97,6 +97,9 @@ def test_backend_downloads_images_to_assets(tmp_path, monkeypatch):
         content = b"PNGDATA"
         headers = {"Content-Type": "image/png"}
 
+        def raise_for_status(self):
+            return None
+
     monkeypatch.setattr("xmd.backends.lake_doc.http_get", lambda url, timeout: FakeResp())
     src = _write_doc(tmp_path, {"type": "Doc", "format": "lake",
                                 "body": '<p><img src="https://x/1.png"/></p>', "body_asl": ""})
@@ -125,4 +128,4 @@ def test_backend_latex_restored(tmp_path):
         "body": '<p><img src="u1"/></p>',
         "body_asl": _card("u1", "E=mc^2")})
     r = LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
-    assert "$E=mc^2$" in r.body
+    assert "E=mc^2" in r.body and "$$" in r.body

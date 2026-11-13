@@ -281,9 +281,8 @@ def replace_latex_images(html: str, latex_dict: dict[str, str]) -> str:
 
         # 判断块级 vs 行内：
         #   含换行符的 LaTeX 通常是多行公式（align、matrix 等） → 块级
-        #   单行公式一律行内（语雀 body 的公式 img 父元素几乎总是 p/div，
-        #   若按父元素判块级，嵌在段落文本中的行内公式会全部退化为 $$）
-        is_block = "\n" in raw_latex.strip()
+        #   父元素是块级 HTML 元素 → 块级
+        is_block = ("\n" in raw_latex.strip()) or (parent_tag in ("p", "div", "center"))
 
         if is_block:
             replacement = soup.new_string(f"\n$$\n{raw_latex.strip()}\n$$\n")
@@ -307,7 +306,9 @@ def _download_image_with_retry(src: str):
 
     for attempt in range(1, IMAGE_DOWNLOAD_MAX_ATTEMPTS + 1):
         try:
-            return http_get(src, timeout=IMAGE_DOWNLOAD_TIMEOUT)
+            resp = http_get(src, timeout=IMAGE_DOWNLOAD_TIMEOUT)
+            resp.raise_for_status()
+            return resp
         except Exception as e:
             last_error = e
             if attempt < IMAGE_DOWNLOAD_MAX_ATTEMPTS:
