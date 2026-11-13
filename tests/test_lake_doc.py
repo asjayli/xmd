@@ -4,7 +4,6 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
-from bs4 import BeautifulSoup
 
 from xmd.backends.lake_doc import (
     LakeDocBackend,
@@ -12,7 +11,7 @@ from xmd.backends.lake_doc import (
     html_to_markdown,
     replace_latex_images,
 )
-from xmd.model import Category, FileEntry, Task
+from xmd.model import Category, ConvertError, FileEntry, Task
 
 
 def _card(src: str, code: str) -> str:
@@ -129,3 +128,10 @@ def test_backend_latex_restored(tmp_path):
         "body_asl": _card("u1", "E=mc^2")})
     r = LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
     assert "E=mc^2" in r.body and "$$" in r.body
+
+
+def test_backend_corrupt_json_raises_convert_error(tmp_path):
+    src = tmp_path / "x.json"
+    src.write_text("{corrupted", encoding="utf-8")
+    with pytest.raises(ConvertError):
+        LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))

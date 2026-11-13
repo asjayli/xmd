@@ -378,7 +378,11 @@ class LakeDocBackend:
     """语雀普通文档 → Markdown 后端。"""
 
     def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
-        doc = json.loads(source.read_text(encoding="utf-8")).get("doc", {})
+        try:
+            doc = json.loads(source.read_text(encoding="utf-8")).get("doc", {})
+        except json.JSONDecodeError as e:
+            # 损坏 json → ConvertError（runner 记 error 粒度），而非裸异常（crash）
+            raise ConvertError(f"文档 json 解析失败: {source.name}: {e}") from e
         # 用 `or ""` 兜底：键存在但值为 None 时，dict.get 的默认值不会生效
         body_asl = doc.get("body_asl") or ""
         latex_dict = extract_latex_from_asl(body_asl)

@@ -102,8 +102,13 @@ def _use_uuid_tree(toc: list) -> bool:
 
 def _iter_doc_entries_by_uuid(toc: list):
     """用 parent_uuid 精确还原目录树，按深度优先顺序产出
-    (祖先目录标题列表, 文档标题, url) 序列。（单遍遍历 + path_of 缓存，
-    完整算法说明迁自源工程注释。）"""
+    (祖先目录标题列表, 文档标题, url) 序列。
+
+    单遍遍历：path_of[uuid] 缓存每个节点的"祖先目录标题列表"。前置条件：
+    语雀 tocYml 按深度优先顺序排列，父节点先于子节点出现，因此父路径
+    总能在子节点前就绪。DOC 节点输出到其父链目录下；TITLE 不输出文件，
+    但作为目录名被其子孙引用。若违反前置条件（子在前、父在后），孤儿
+    节点会因查不到父路径而落到根目录。"""
     path_of: dict = {}
     for item in toc:
         if not isinstance(item, dict):
@@ -137,6 +142,10 @@ def _iter_doc_entries_by_level(toc: list):
             continue
         current_level = item.get("level", 0)
         if current_level > last_level:
+            # 按 level 差值压栈，而非仅压一次：跳级（如 0→2）时压入多个栈帧，
+            # 中间缺失层级用空串占位（落盘时路径拼接会折叠空段，不产生
+            # 空名目录）。关键在栈深度须与 level 对齐，否则后续回退时弹出的
+            # 帧数错误，会把文档错误地归到上层或根目录。
             diff = current_level - last_level
             path_stack = path_stack + [last_title] + [""] * (diff - 1)
         elif current_level < last_level:

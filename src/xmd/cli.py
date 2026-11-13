@@ -26,6 +26,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--retry-review", action="store_true",
                    help="仅重转上次 need-review.csv 记录的子集（隐含 --force；"
                         "缺 CSV 或无记录时直接退出 rc=0，不重转）")
+    # 可插拔后端
     p.add_argument("--backend",
                    choices=["markitdown", "pdf-inspector", "mineru", "auto"],
                    default="markitdown", help="PDF 族转换后端（默认 markitdown）")
@@ -71,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
         if not only:
             print("--retry-review: need-review.csv 无记录，无需重转", file=sys.stderr)
             return 0
+        # 提示 only 中源文件已不存在的条目（被 walk 过滤，静默忽略）。
+        # 此处与 run() 内各 walk 一次：提示需在转换开始前给出（informational），
+        # run 以自身 walk 为准；两次遍历的大库开销（秒级）相对转换耗时可接受。
         from xmd.walker import scan_input
         exist = {str(e.rel_path) for i in inputs for e in scan_input(i).files}
         missing_src = sorted(only - exist)

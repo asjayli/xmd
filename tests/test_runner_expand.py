@@ -6,8 +6,6 @@ from conftest import make_lakebook
 from xmd.runner import run
 
 DOC = {"type": "Doc", "format": "lake", "body": "<h1>标题</h1><p>内容文字</p>", "body_asl": ""}
-SHEET = {"type": "Sheet", "format": "lakesheet",
-         "body": '{"format":"lakesheet","sheet":"x"}'}   # 解析失败亦无妨：仅验路由
 TOC = [{"title": "文档", "type": "DOC", "url": "d1", "level": 0, "uuid": "d1"},
        {"title": "表", "type": "DOC", "url": "s1", "level": 0, "uuid": "s1"}]
 
