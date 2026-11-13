@@ -1,34 +1,12 @@
 """lakebook 展开器测试：最小 tar fixtures 覆盖 uuid/level 双建树与异常路径。"""
 import io
-import json
 import tarfile
 
 import pytest
-import yaml
 
+from conftest import make_lakebook
 from xmd.classifier import Category
 from xmd.expanders import ExpandError, expand_lakebook
-
-
-def make_lakebook(path, docs, toc, *, with_uuid=True, repo_id="123"):
-    """构造最小 .lakebook tar：repo_id/$meta.json + <url>.json。
-
-    docs: [{"url": "abc", "doc": {...}}]；toc: TOC 条目列表（dict）。
-    """
-    entries = []
-    if not with_uuid:
-        toc = [{k: v for k, v in t.items() if k not in ("uuid", "parent_uuid")} for t in toc]
-    meta_inner = {"book": {"name": "测试库", "path": "https://y.com/u/test",
-                           "tocYml": yaml.safe_dump(toc, allow_unicode=True)}}
-    entries.append((f"{repo_id}/$meta.json", json.dumps({"meta": json.dumps(meta_inner)})))
-    for d in docs:
-        entries.append((f"{repo_id}/{d['url']}.json", json.dumps({"doc": d["doc"]})))
-    with tarfile.open(path, "w") as tf:
-        for name, data in entries:
-            b = data.encode("utf-8")
-            ti = tarfile.TarInfo(name)
-            ti.size = len(b)
-            tf.addfile(ti, io.BytesIO(b))
 
 
 DOC = {"type": "Doc", "format": "lake", "body": "<h1>T</h1>", "body_asl": ""}

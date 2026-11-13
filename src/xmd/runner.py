@@ -3,13 +3,14 @@
 编排（run/_dispatch）在 Phase 7 追加。
 后端可插拔：Ctx.backend 选 markitdown|pdf-inspector|mineru|auto。
 MinerU 额度即停：_dispatch 识别 MINERU_DAILY_LIMIT 后停止提交剩余（贯彻不用优先额度）。
-容器展开（.lakebook）由 Task 13 集成：expanders 在主进程展开为虚拟 FileEntry。
+容器展开（.lakebook）：expanders 在主进程展开为虚拟 FileEntry，随批共享并行/续传/报告。
 """
 from __future__ import annotations
 
 import csv
 import json
 import logging
+import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -73,7 +74,7 @@ _WORKER_CONV: Converter | None = None
 
 
 def _build_converter(ctx: Ctx) -> Converter:
-    """按 ctx.backend 实例化后端（延迟 import 避免循环/可选依赖）。"""
+    """按 ctx.backend 实例化后端（模块顶层已 import，无循环依赖）。"""
     if ctx.backend == "auto":
         return AutoConverter(ctx.backend_opts)
     if ctx.backend == "mineru":
@@ -109,6 +110,25 @@ def _size_mb(path: Path) -> float:
         return 0.0
 
 
+# lake 族后端 worker 单例（惰性创建；PDF 族仍走 _get_converter 的 ctx.backend）
+_WORKER_LAKE: dict[str, Converter] = {}
+
+
+def _converter_for(category: Category) -> Converter:
+    """按任务类别选后端：lake 族按需惰性单例；其余（PDF 族）按 ctx.backend。"""
+    if category is Category.LAKE_DOC:
+        if "doc" not in _WORKER_LAKE:
+            from xmd.backends.lake_doc import LakeDocBackend
+            _WORKER_LAKE["doc"] = LakeDocBackend()
+        return _WORKER_LAKE["doc"]
+    if category is Category.LAKE_SHEET:
+        if "sheet" not in _WORKER_LAKE:
+            from xmd.backends.lake_sheet import LakeSheetBackend
+            _WORKER_LAKE["sheet"] = LakeSheetBackend()
+        return _WORKER_LAKE["sheet"]
+    return _get_converter()
+
+
 def process_one(task: Task) -> Result:
     """单文件完整流水线（worker 进程内）。ctx 取 worker 全局。"""
     assert _WORKER_CTX is not None, "worker 未初始化"
@@ -135,7 +155,7 @@ def process_one(task: Task) -> Result:
 
     title = task.output_md.stem
     try:
-        cres = _get_converter().convert(entry.abs_path, task.assets_dir, task)
+        cres = _converter_for(entry.category).convert(entry.abs_path, task.assets_dir, task)
     except ConvertError as e:
         return Result(rel, "error", 0, 0, str(e))
 
@@ -271,6 +291,36 @@ def _dispatch(tasks: list[Task], ctx: Ctx, jobs: int, output_root: Path) -> list
     return results
 
 
+def _expand_inputs(files: list[FileEntry], *, no_image: bool, convert_sheets: bool,
+                   sheet_format: str) -> tuple[list[FileEntry], list[Path], list[Result]]:
+    """展开容器条目（.lakebook）→ 虚拟 FileEntry。
+
+    返回 (待转条目, 待清理 tmp 目录, 展开失败结果)。展开在主进程串行执行
+    （tar 解压 IO 型）；损坏/恶意归档记 error 结果，不中断批量。
+    """
+    from xmd.expanders import ExpandError, expand_lakebook   # 延迟 import
+    entries: list[FileEntry] = []
+    tmp_dirs: list[Path] = []
+    errors: list[Result] = []
+    for e in files:
+        if e.category is not Category.LAKEBOOK:
+            entries.append(e)
+            continue
+        try:
+            sub, tmp = expand_lakebook(e.abs_path,
+                                       download_image=not no_image,
+                                       sheet_format=sheet_format)
+        except ExpandError as err:
+            errors.append(Result(str(e.rel_path), "error", 0, 0, str(err)))
+            continue
+        tmp_dirs.append(tmp)
+        if convert_sheets:
+            entries.extend(sub)
+        else:   # --no-sheet：跳过表格文档（不出文件不计结果）
+            entries.extend(x for x in sub if x.category is not Category.LAKE_SHEET)
+    return entries, tmp_dirs, errors
+
+
 def run(source, output: Path, jobs: int = 4,
         force: bool = False, min_chars: int = 50, max_pdf_mb: int = 20,
         backend: str = "markitdown", backend_opts: dict | None = None,
@@ -278,9 +328,9 @@ def run(source, output: Path, jobs: int = 4,
         convert_sheets: bool = True, sheet_format: str = "csv") -> dict:
     """source 支持单 Path 或 Path 列表（混合文件/目录输入）。
 
-    容器展开集成由 Task 13 加入：当前实现遍历输入、镜像目录、preprocess、
-    dispatch、报告（与源工程 run 行为一致，LAKEBOOK 条目暂按 SKIP 之外逻辑
-    走 markitdown，Task 13 接管）。
+    遍历输入 → 镜像目录 → 主进程展开容器（.lakebook）→ preprocess →
+    dispatch → 报告；展开失败记 error 结果不中断批量，展开 tmp 目录在
+    dispatch 结束后统一清理。
     """
     inputs = list(source) if isinstance(source, (list, tuple)) else [source]
     inputs = [Path(i) for i in inputs]
@@ -298,15 +348,27 @@ def run(source, output: Path, jobs: int = 4,
     for d in dirs:  # 镜像全部目录（含空目录）
         (output / d).mkdir(parents=True, exist_ok=True)
 
-    tasks = preprocess(walked_files, output)
+    entries, tmp_dirs, expand_errors = _expand_inputs(
+        walked_files, no_image=no_image,
+        convert_sheets=convert_sheets, sheet_format=sheet_format)
+
+    tasks = preprocess(entries, output)
     if only is not None:   # --retry-review：仅处理指定 rel_path 子集
         tasks = [t for t in tasks if str(t.entry.rel_path) in only]
     ctx = Ctx(force=force, min_chars=min_chars, max_pdf_mb=max_pdf_mb,
               backend=backend, backend_opts=backend_opts, no_image=no_image)
     start = time.perf_counter()
-    results = _dispatch(tasks, ctx, jobs, output)
+    try:
+        results = _dispatch(tasks, ctx, jobs, output)
+    finally:
+        # 展开产生的 tmp 目录统一清理（dispatch 内 BrokenProcessPool 重启也不外逸）
+        for t in tmp_dirs:
+            shutil.rmtree(t, ignore_errors=True)
     duration = time.perf_counter() - start
 
+    for r in expand_errors:   # 展开失败并入结果与日志
+        _append_log(output, r)
+    results = expand_errors + results
     _write_need_review(output, results)
     summary = _summarize(results, duration)
     (output / "summary.json").write_text(
