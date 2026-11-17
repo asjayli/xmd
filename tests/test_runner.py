@@ -389,3 +389,49 @@ def test_need_review_csv_formula_injection_neutralized(tmp_path):
     text = (tmp_path / "need-review.csv").read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in text and "'+x" in text
     assert "正常/路径.md" in text   # 普通路径逐字节不变
+
+
+def test_run_overlapping_inputs_dedup(tmp_path):
+    # mar #12：目录与其子文件重叠输入 → 同一源文件只生成一个任务（total 不重复）
+    src = tmp_path / "src"
+    sub = src / "sub"
+    sub.mkdir(parents=True)
+    (sub / "a.md").write_text("足够长的正文内容以超过阈值", encoding="utf-8")
+    s = run([src, sub / "a.md"], tmp_path / "out", jobs=1, min_chars=5)
+    assert s["total"] == 1   # 修复前：walk(dir)+scan(file) 各产一条 → total=2
+
+
+def test_run_only_preserves_untouched_need_review_rows(tmp_path):
+    # mar #5：only 子集重转不清空历史清单——未触及行逐字节保留，触及行按新结果更新
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("短", encoding="utf-8")
+    (src / "b.md").write_text("短", encoding="utf-8")
+    out = tmp_path / "out"
+    s1 = run(src, out, jobs=1, min_chars=100)
+    assert s1["need_review"] == 2
+    csv1 = (out / "need-review.csv").read_text(encoding="utf-8-sig")
+    b_line = next(ln for ln in csv1.splitlines() if ln.startswith("b.md,"))
+    # 二轮：b 源改名消失，仅重转 a（阈值放宽 → ok）；b 行应原样保留，a 行移出
+    (src / "b.md").rename(src / "bb.md")
+    run(src, out, jobs=1, min_chars=1, only={"a.md"}, force=True)
+    lines = (out / "need-review.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert b_line in lines                          # 未触及历史行逐字节保留
+    assert not any(ln.startswith("a.md,") for ln in lines)   # 已修复 → 移出清单
+
+
+def test_run_only_updates_touched_rows_in_place(tmp_path):
+    # mar #5：触及行以新结果替换（仍需复核 → 行更新，不产生重复行）
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("短", encoding="utf-8")
+    out = tmp_path / "out"
+    run(src, out, jobs=1, min_chars=100)
+    (src / "a.md").write_text("依旧很短", encoding="utf-8")
+    run(src, out, jobs=1, min_chars=100, only={"a.md"}, force=True)
+    import csv as _csv
+    with (out / "need-review.csv").open(encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    a_rows = [row for row in rows if row["rel_path"] == "a.md"]
+    assert len(a_rows) == 1                       # 行唯一（替换而非追加）
+    assert a_rows[0]["status"] == "need_review"   # 仍需复核 → 行更新保留

@@ -214,6 +214,35 @@ def _write_need_review(output_root: Path, results: list[Result]) -> None:
             w.writerow([csv_safe(r.rel_path), r.chars, r.status])
 
 
+def _write_need_review_merged(output_root: Path, results: list[Result], only: set[str]) -> None:
+    """retry 子集模式（mar #5）：合并旧 need-review.csv。
+
+    本轮未触及（rel_path 不在 only）的历史行原样逐字节保留；触及行以本轮
+    结果替换——已修复（ok/skipped/copied/collision）则移出清单，仍需复核
+    则更新行。旧文件缺失/损坏时退化为全量重写。
+    """
+    csv_path = output_root / "need-review.csv"
+    old_lines: list[str] = []
+    if csv_path.exists():
+        with csv_path.open(encoding="utf-8-sig", newline="") as f:
+            lines = f.read().splitlines()
+        for line in lines[1:]:   # 跳过表头
+            try:
+                first = next(csv.reader([line]))[0]
+            except (StopIteration, csv.Error, IndexError):
+                continue   # 异构行（空行/损坏）丢弃
+            if first not in only:
+                old_lines.append(line)
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["rel_path", "chars", "status"])
+        for line in old_lines:   # 未触及历史行逐字节回写
+            f.write(line + "\n")
+        for r in results:
+            if r.rel_path in only and r.status in ("need_review", "empty", "error", "crash"):
+                w.writerow([csv_safe(r.rel_path), r.chars, r.status])
+
+
 def _summarize(results: list[Result], duration: float) -> dict:
     s = {"total": len(results), "ok": 0, "skipped": 0, "error": 0,
          "need_review": 0, "copied": 0, "collision": 0, "empty": 0,
@@ -376,7 +405,10 @@ def run(source, output: Path, jobs: int = 4,
     for r in expand_errors:   # 展开失败并入结果与日志
         _append_log(output, r)
     results = expand_errors + results
-    _write_need_review(output, results)
+    if only is not None:   # retry 子集模式：保留未触及历史行（mar #5）
+        _write_need_review_merged(output, results, only)
+    else:
+        _write_need_review(output, results)
     summary = _summarize(results, duration)
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
