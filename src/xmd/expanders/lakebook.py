@@ -10,6 +10,7 @@ category 决定；同名去重由 runner.preprocess 统一确定性后缀处理�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tarfile
@@ -198,7 +199,13 @@ def expand_lakebook(archive: Path, *, download_image: bool = True,
                 inside = False
             if not inside or not raw.exists():
                 continue   # 原行为：文档文件缺失时警告并跳过该条目
-            doc = json.loads(raw.read_text(encoding="utf-8")).get("doc", {})
+            # mar #4：单文档读取/解析失败只跳过该文档（与缺失同语义），
+            # 不再让整本书展开失败（全有或全无会放大损坏面）
+            try:
+                doc = json.loads(raw.read_text(encoding="utf-8")).get("doc", {})
+            except (OSError, json.JSONDecodeError) as e:
+                logging.getLogger(__name__).warning("跳过损坏文档 %s: %s", url, e)
+                continue
             is_sheet = doc.get("type", "") == TYPE_SHEET or doc.get("format", "") == "lakesheet"
             cat = Category.LAKE_SHEET if is_sheet else Category.LAKE_DOC
             rel = Path(book_dir, *[p for p in path_parts if p], title)

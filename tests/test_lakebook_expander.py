@@ -244,3 +244,32 @@ def test_run_tmpdir_on_output_disk_and_cleaned(tmp_path, monkeypatch):
     assert seen["tmp_base"] == out / ".xmd-tmp"   # 落输出盘而非系统 tmpfs
     assert not (out / ".xmd-tmp").exists()        # run 结束清理基准目录
     assert not any(Path(tempfile.gettempdir()).glob("xmd_lakebook_*"))
+
+
+def test_expand_single_corrupt_doc_skipped(tmp_path):
+    # mar #4：单个损坏 doc json 跳过（与文件缺失同语义），完好文档照常展开/转换
+    import yaml as _yaml
+    from xmd.runner import run
+    toc = [{"title": "好文档", "type": "DOC", "url": "d1", "level": 0, "uuid": "d1"},
+           {"title": "坏文档", "type": "DOC", "url": "d2", "level": 0, "uuid": "d2"}]
+    meta_inner = {"book": {"name": "测试库",
+                           "tocYml": _yaml.safe_dump(toc, allow_unicode=True)}}
+    p = tmp_path / "book.lakebook"
+    with tarfile.open(p, "w") as tf:
+        entries = [
+            ("123/$meta.json", json.dumps({"meta": json.dumps(meta_inner)})),
+            ("123/d1.json", json.dumps({"doc": DOC})),
+            ("123/d2.json", "{corrupted"),   # 损坏 json：不应拖垮整本书
+        ]
+        for name, data in entries:
+            b = data.encode("utf-8")
+            ti = tarfile.TarInfo(name)
+            ti.size = len(b)
+            tf.addfile(ti, io.BytesIO(b))
+    entries = _expand(p)
+    assert [e.meta["url"] for e in entries] == ["d1"]   # 仅完好文档成为任务
+    # 端到端：批量 status 无整书 error，完好文档成功落盘
+    out = tmp_path / "out"
+    s = run(tmp_path, out, jobs=1, min_chars=1)
+    assert s["error"] == 0 and s["ok"] == 1
+    assert (out / "book" / "好文档.md").exists()
