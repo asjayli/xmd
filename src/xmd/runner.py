@@ -380,6 +380,21 @@ def run(source, output: Path, jobs: int = 4,
         dirs += w.dirs
     for d in dirs:  # 镜像全部目录（含空目录）
         (output / d).mkdir(parents=True, exist_ok=True)
+    # 重叠输入去重（mar #12）：目录与其子文件同时作为输入时，同一源文件
+    # 只保留首次出现的条目（目录 walk 的 rel 带镜像结构，优先），避免
+    # 双份转换/同路径并发写/统计与计费翻倍
+    seen_paths: set[Path] = set()
+    deduped: list[FileEntry] = []
+    for e in walked_files:
+        try:
+            key = e.abs_path.resolve()
+        except OSError:
+            key = e.abs_path   # 解析失败（如已删除）：按原路径去重
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        deduped.append(e)
+    walked_files = deduped
 
     entries, tmp_dirs, expand_errors = _expand_inputs(
         walked_files, no_image=no_image,
