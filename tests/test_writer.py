@@ -127,3 +127,15 @@ def test_build_output_path_traversal_guard(tmp_path, monkeypatch):
     e = _e("../pwn", Category.LAKE_DOC)   # 足以上溯越出输出根
     with pytest.raises(ValueError):
         build_output_path(e, tmp_path / "out")
+
+
+def test_csv_safe_formula_injection():
+    # mar #2：= + - @ 开头的值前缀 ' 抑制表格软件公式求值；普通值逐字节不变
+    from xmd.writer import csv_safe
+    assert csv_safe("=WEBSERVICE(\"http://x\")") == "'=WEBSERVICE(\"http://x\")"
+    assert csv_safe("+1+1") == "'+1+1"
+    assert csv_safe("-2+3|cmd") == "'-2+3|cmd"
+    assert csv_safe("@SUM(A1)") == "'@SUM(A1)"
+    assert csv_safe("普通文本") == "普通文本"
+    assert csv_safe("a=b") == "a=b"   # 非开头 = 不受影响
+    assert csv_safe("") == ""

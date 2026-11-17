@@ -14,6 +14,16 @@ from xmd.model import Category, FileEntry
 # 源工程并集：youdao 半/全角基础集 ∪ lakebook 括号花括号集（后者不含空格项）
 _ILLEGAL = set('\\/:*?"<>|()[]{}') | set("＼／：＊？＂＜＞｜（）［］｛｝")
 
+# CSV 公式注入防御（mar #2）：表格软件把 = + - @ 开头的单元格当公式求值，
+# 落盘前给这类值前缀单引号（Excel/WPS/LibreOffice 通用抑制约定）
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def csv_safe(value) -> str:
+    """CSV 单元格值净化：公式触发前缀（= + - @）开头 → 前缀 '；其余值原样返回。"""
+    s = str(value)
+    return "'" + s if s.startswith(_CSV_FORMULA_PREFIXES) else s
+
 
 def sanitize_filename(name: str) -> str:
     cleaned = "".join("_" if c in _ILLEGAL else c for c in name)

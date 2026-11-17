@@ -30,7 +30,7 @@ from xmd.model import (
     Result,
     Task,
 )
-from xmd.writer import assets_dir_for, build_output_path, copy_skip, write_markdown
+from xmd.writer import assets_dir_for, build_output_path, copy_skip, csv_safe, write_markdown
 
 # Result/Task 自 model 导入并 re-export，保持 runner 对外稳定接口
 __all__ = ["Ctx", "Result", "Task", "preprocess", "process_one", "run"]
@@ -210,7 +210,8 @@ def _write_need_review(output_root: Path, results: list[Result]) -> None:
         w = csv.writer(f)
         w.writerow(["rel_path", "chars", "status"])
         for r in rows:
-            w.writerow([r.rel_path, r.chars, r.status])
+            # rel_path 不可信（lakebook TOC 标题）：公式注入防御与 lake_sheet CSV 同修（mar #2）
+            w.writerow([csv_safe(r.rel_path), r.chars, r.status])
 
 
 def _summarize(results: list[Result], duration: float) -> dict:

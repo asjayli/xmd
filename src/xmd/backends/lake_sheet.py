@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from xmd.model import ConvertError, ConvertResult, Task
+from xmd.writer import csv_safe
 
 # —— 以下解析函数逐字迁自 sheet_converter（parse_lakesheet 内 print 改为
 #    静默返回 None，失败信息由 ConvertError 在 Backend 层统一报告）——
@@ -432,8 +433,9 @@ class LakeSheetBackend:
             content = rows_to_sheet_plus_format(rows, task.entry.meta.get("title", ""))
             out.write_text(content, encoding="utf-8")
         else:
-            # 默认格式为 CSV：原值原样输出（无样式、无日期猜测转换）
+            # 默认格式为 CSV：原值原样输出（无样式、无日期猜测转换）；
+            # = + - @ 开头单元格前缀 ' 防公式注入（mar #2），普通值逐字节不变
             with out.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-                writer.writerows(rows)
+                writer.writerows([[csv_safe(c) for c in row] for row in rows])
         return ConvertResult(body="", handled_images=True, handled_output=True)

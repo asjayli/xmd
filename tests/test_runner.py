@@ -375,3 +375,17 @@ def test_dispatch_daily_stop_marks_cancelled(tmp_path, monkeypatch):
     assert by_rel["ok1.note.pdf"].status == "ok"          # 已完成 → 真实结果
     assert by_rel["daily.note.pdf"].status == "error"     # daily_limit
     assert by_rel["ok2.note.pdf"].status == "need_review" # 被 cancel → 待续传
+
+
+def test_need_review_csv_formula_injection_neutralized(tmp_path):
+    # mar #2 PoC 回归：need-review.csv 的 rel_path 同样做公式注入防御
+    from xmd.runner import _write_need_review
+    from xmd.model import Result
+    _write_need_review(tmp_path, [
+        Result("=HYPERLINK(\"http://evil\")", "need_review", 10, 0, None),
+        Result("+x", "empty", 0, 0, None),
+        Result("正常/路径.md", "need_review", 100, 0, None),
+    ])
+    text = (tmp_path / "need-review.csv").read_text(encoding="utf-8-sig")
+    assert "'=HYPERLINK" in text and "'+x" in text
+    assert "正常/路径.md" in text   # 普通路径逐字节不变
