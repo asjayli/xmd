@@ -142,18 +142,18 @@ def process_one(task: Task) -> Result:
     else:
         src_mtime = entry.abs_path.stat().st_mtime
     if (not ctx.force
-            and task.output_md.exists()
-            and task.output_md.stat().st_mtime >= src_mtime):
+            and task.output_path.exists()
+            and task.output_path.stat().st_mtime >= src_mtime):
         return Result(rel, "skipped", 0, 0, None)
 
     if entry.category is Category.SKIP:
         try:
-            copy_skip(entry.abs_path, task.output_md)
+            copy_skip(entry.abs_path, task.output_path)
             return Result(rel, "copied", 0, 0, None)
         except Exception as e:
             return Result(rel, "error", 0, 0, str(e))
 
-    title = task.output_md.stem
+    title = task.output_path.stem
     try:
         cres = _converter_for(entry.category).convert(entry.abs_path, task.assets_dir, task)
     except ConvertError as e:
@@ -175,7 +175,7 @@ def process_one(task: Task) -> Result:
         except ImageError:
             pass  # 降级：仅文本
 
-    write_markdown(task.output_md, title, body, image_refs)
+    write_markdown(task.output_path, title, body, image_refs)
 
     stripped = body.strip()
     if stripped == "":

@@ -23,7 +23,7 @@ def _write_sheet(tmp_path, data, name="s.json"):
 
 
 def _task(src, output, fmt="csv", title="表"):
-    """构造 lake_sheet 任务（后端读 task.output_md 与 task.entry.meta）。"""
+    """构造 lake_sheet 任务（后端读 task.output_path 与 task.entry.meta）。"""
     entry = FileEntry(Path("b/表"), src, Category.LAKE_SHEET,
                       meta={"title": title, "sheet_format": fmt})
     return Task(entry, output, output.parent / (output.stem + ".assets"), False)

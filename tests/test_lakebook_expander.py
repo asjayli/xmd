@@ -134,7 +134,7 @@ def test_expand_traversal_titles_sanitized(tmp_path):
     make_lakebook(p, [{"url": "d1", "doc": DOC}], toc)
     tasks = preprocess(_expand(p), tmp_path / "out")
     # 清理发生在 build_output_path：目录段 `..` → `_`，末段补 .md
-    assert [str(t.output_md) for t in tasks] == [str(tmp_path / "out" / "book" / "_" / "_" / "pwn.md")]
+    assert [str(t.output_path) for t in tasks] == [str(tmp_path / "out" / "book" / "_" / "_" / "pwn.md")]
 
 
 def test_run_traversal_lakebook_stays_in_output(tmp_path):

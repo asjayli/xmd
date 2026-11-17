@@ -72,20 +72,20 @@ def build_output_path(entry: FileEntry, output_root: Path) -> Path:
     return output_root.joinpath(*parts) / f"{sanitize_filename(stem)}{ext}"
 
 
-def assets_dir_for(output_md: Path) -> Path:
+def assets_dir_for(output_path: Path) -> Path:
     """配图目录 = md 同级 f"{stem}.assets"；按需创建。"""
-    return output_md.parent / f"{output_md.stem}.assets"
+    return output_path.parent / f"{output_path.stem}.assets"
 
 
-def write_markdown(output_md: Path, title: str, body: str, image_refs: list[str]) -> None:
-    output_md.parent.mkdir(parents=True, exist_ok=True)
+def write_markdown(output_path: Path, title: str, body: str, image_refs: list[str]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     parts = [f"# {title}".strip(), "", body.strip()]
     if image_refs:
         parts += ["", "## 笔记配图", ""]
         for ref in image_refs:
             alt = Path(ref).stem
             parts.append(f"![{alt}]({ref})")
-    output_md.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    output_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
 
 def copy_skip(src: Path, dst: Path) -> None:

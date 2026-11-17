@@ -53,7 +53,7 @@ class FileEntry:
 class Task:
     """preprocess 解析后的执行任务（输出路径已含冲突去重结果）。"""
     entry: FileEntry
-    output_md: Path
+    output_path: Path
     assets_dir: Path
     collision: bool
 

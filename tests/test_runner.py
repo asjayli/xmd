@@ -32,7 +32,7 @@ def test_no_conflict(tmp_path):
     files = [_entry(root, "a.note.pdf", Category.NOTE_PDF)]
     tasks = preprocess(files, tmp_path / "out")
     assert len(tasks) == 1
-    assert tasks[0].output_md == tmp_path / "out" / "a.md"
+    assert tasks[0].output_path == tmp_path / "out" / "a.md"
     assert tasks[0].collision is False
 
 
@@ -45,8 +45,8 @@ def test_same_name_note_vs_pdf_disambiguated(tmp_path):
     ]
     tasks = preprocess(files, tmp_path / "out")
     outs = {t.entry.abs_path.name: t for t in tasks}
-    note_md = outs["IO设计模式之Reactor和Proactor.note.pdf"].output_md
-    pdf_md = outs["IO设计模式之Reactor和Proactor.pdf"].output_md
+    note_md = outs["IO设计模式之Reactor和Proactor.note.pdf"].output_path
+    pdf_md = outs["IO设计模式之Reactor和Proactor.pdf"].output_path
     assert note_md != pdf_md
     assert pdf_md.stem != "IO设计模式之Reactor和Proactor"
     assert outs["IO设计模式之Reactor和Proactor.pdf"].collision is True
@@ -475,7 +475,7 @@ def test_preprocess_triple_conflict_chain(tmp_path):
         _entry(root, "a.pdf", Category.PDF),            # a.md✗ → a__pdf.md✗ → a__pdf__2.md
     ]
     tasks = preprocess(files, tmp_path / "out")
-    outs = [t.output_md.name for t in tasks]
+    outs = [t.output_path.name for t in tasks]
     assert outs == ["a__pdf.md", "a.md", "a__pdf__2.md"]   # 三路径互异
     assert tasks[2].collision is True
 

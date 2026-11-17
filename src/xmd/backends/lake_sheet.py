@@ -449,7 +449,7 @@ class LakeSheetBackend:
         rows = parse_lakesheet(body)
         if not rows:
             raise ConvertError("表格数据解析失败或为空")
-        out = task.output_md
+        out = task.output_path
         out.parent.mkdir(parents=True, exist_ok=True)
         if task.entry.meta.get("sheet_format", "csv") == "sheet":
             # file_path 不传：Univer name 用文档标题（meta.title），而非输出文件
