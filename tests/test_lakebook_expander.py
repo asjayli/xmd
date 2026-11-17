@@ -118,3 +118,40 @@ def test_expand_missing_doc_skipped(tmp_path):
     p = tmp_path / "m.lakebook"
     make_lakebook(p, [], toc)
     assert _expand(p) == []
+
+
+def test_expand_traversal_titles_sanitized(tmp_path):
+    # mar #1 PoC 回归：两层 `..` TITLE + DOC pwn → 输出路径目录段被替换为 _，不越出输出根
+    from xmd.runner import preprocess
+    toc = [
+        {"title": "..", "type": "TITLE", "url": "", "level": 0, "uuid": "t1"},
+        {"title": "..", "type": "TITLE", "url": "", "level": 1, "uuid": "t2", "parent_uuid": "t1"},
+        {"title": "pwn", "type": "DOC", "url": "d1", "level": 2, "uuid": "d1", "parent_uuid": "t2"},
+    ]
+    p = tmp_path / "book.lakebook"
+    make_lakebook(p, [{"url": "d1", "doc": DOC}], toc)
+    tasks = preprocess(_expand(p), tmp_path / "out")
+    # 清理发生在 build_output_path：目录段 `..` → `_`，末段补 .md
+    assert [str(t.output_md) for t in tasks] == [str(tmp_path / "out" / "book" / "_" / "_" / "pwn.md")]
+
+
+def test_run_traversal_lakebook_stays_in_output(tmp_path):
+    # mar #1 端到端：恶意 TOC 的全部输出文件 resolve 后位于 output_root 内，无外逸写
+    from xmd.runner import run
+    toc = [
+        {"title": "..", "type": "TITLE", "url": "", "level": 0, "uuid": "t1"},
+        {"title": "..", "type": "TITLE", "url": "", "level": 1, "uuid": "t2", "parent_uuid": "t1"},
+        {"title": "pwn", "type": "DOC", "url": "d1", "level": 2, "uuid": "d1", "parent_uuid": "t2"},
+    ]
+    src = tmp_path / "src"
+    src.mkdir()
+    make_lakebook(src / "book.lakebook", [{"url": "d1", "doc": DOC}], toc)
+    out = tmp_path / "out"
+    s = run(src, out, jobs=1, min_chars=1)
+    assert s["total"] == 1
+    assert (out / "book" / "_" / "_" / "pwn.md").exists()
+    assert not (tmp_path / "pwn.md").exists()   # 修复前穿越写到 out 外
+    root = out.resolve()
+    for f in out.rglob("*"):
+        if f.is_file():
+            assert f.resolve().is_relative_to(root)

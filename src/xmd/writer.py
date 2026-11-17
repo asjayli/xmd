@@ -16,7 +16,12 @@ _ILLEGAL = set('\\/:*?"<>|()[]{}') | set("＼／：＊？＂＜＞｜（）［�
 
 
 def sanitize_filename(name: str) -> str:
-    return "".join("_" if c in _ILLEGAL else c for c in name)
+    cleaned = "".join("_" if c in _ILLEGAL else c for c in name)
+    # 纯点段（. / .. / ...）在路径拼接中求值为当前/上级目录，构成目录穿越
+    # （mar #1），整段替换为 _；含非点字符的合法名（如 a..b）不受影响
+    if cleaned and set(cleaned) == {"."}:
+        return "_"
+    return cleaned
 
 
 def output_ext(entry: FileEntry) -> str:
@@ -39,7 +44,12 @@ def build_output_path(entry: FileEntry, output_root: Path) -> Path:
     ext = output_ext(entry)
     if entry.category in (Category.LAKE_DOC, Category.LAKE_SHEET):
         parts = [sanitize_filename(p) for p in entry.rel_path.parts]
-        return output_root.joinpath(*parts[:-1]) / f"{parts[-1]}{ext}"
+        out = output_root.joinpath(*parts[:-1]) / f"{parts[-1]}{ext}"
+        # 防御纵深（mar #1）：lake 分支的路径段完全来自不可信 TOC，即使上游
+        # 清理失效也拒绝越界输出（resolve 后必须落在输出根之下）
+        if not out.resolve().is_relative_to(output_root.resolve()):
+            raise ValueError(f"输出路径越界: {out}")
+        return out
     name = entry.rel_path.name
     low = name.lower()
     if low.endswith(".note.pdf"):

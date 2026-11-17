@@ -109,3 +109,21 @@ def test_copy_skip(tmp_path):
 
 def test_pretty_md_strips_trailing_and_blank_runs():
     assert pretty_md("a  \n\n\n\nb\n") == "a\n\nb"
+
+
+def test_sanitize_rejects_dot_segments():
+    # mar #1：纯点段（. / .. / ...）在路径拼接中求值为当前/上级目录 → 整段替换为 _
+    assert sanitize_filename("..") == "_"
+    assert sanitize_filename(".") == "_"
+    assert sanitize_filename("...") == "_"
+    assert sanitize_filename("a..b") == "a..b"   # 含非点字符的合法名不变
+    assert sanitize_filename("第..章") == "第..章"
+
+
+def test_build_output_path_traversal_guard(tmp_path, monkeypatch):
+    # mar #1 防御纵深：即使 sanitize 失效（模拟清理函数被改坏），lake 分支也拒绝越界输出
+    import pytest
+    monkeypatch.setattr("xmd.writer.sanitize_filename", lambda s: s)
+    e = _e("../pwn", Category.LAKE_DOC)   # 足以上溯越出输出根
+    with pytest.raises(ValueError):
+        build_output_path(e, tmp_path / "out")
