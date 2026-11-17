@@ -267,12 +267,14 @@ def test_expand_single_corrupt_doc_skipped(tmp_path):
             ti.size = len(b)
             tf.addfile(ti, io.BytesIO(b))
     entries = _expand(p)
-    assert [e.meta["url"] for e in entries] == ["d1"]   # 仅完好文档成为任务
-    # 端到端：批量 status 无整书 error，完好文档成功落盘
+    # mar #18 演进：展开期不再 json 解析（仅正则分类），损坏文档也成为任务，
+    # 由后端按单文档 error 报告——整书仍不失败
+    assert [e.meta["url"] for e in entries] == ["d1", "d2"]
     out = tmp_path / "out"
     s = run(tmp_path, out, jobs=1, min_chars=1)
-    assert s["error"] == 0 and s["ok"] == 1
+    assert s["error"] == 1 and s["ok"] == 1   # 损坏=单文档 error，完好=ok
     assert (out / "book" / "好文档.md").exists()
+    assert "坏文档" in (out / "need-review.csv").read_text(encoding="utf-8-sig")
 
 
 def test_extract_tar_single_pass_cleans_partial(tmp_path):

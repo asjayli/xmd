@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -28,6 +29,11 @@ TYPE_TITLE = "TITLE"   # 分组标题节点：仅用于在目录中显示层级�
 TYPE_DOC = "DOC"       # 普通富文本文档（HTML / Markdown 格式）
 TYPE_SHEET = "Sheet"   # 表格文档（lakesheet 格式，类似 Excel）
 META_JSON = "$meta.json"
+
+# mar #18：展开期仅为路由/输出扩展名做 doc/sheet 分类，不再全文 json 解析
+# （worker 端后端 convert 时 json 才是权威判定，正则误判后果仅为单文档
+# error/格式差异，极小且可兜底）
+_SHEET_HINT_RE = re.compile(r'"(?:type|format)"\s*:\s*"(?:Sheet|lakesheet)"')
 
 
 class ExpandError(Exception):
@@ -204,15 +210,15 @@ def expand_lakebook(archive: Path, *, download_image: bool = True,
                 inside = False
             if not inside or not raw.exists():
                 continue   # 原行为：文档文件缺失时警告并跳过该条目
-            # mar #4：单文档读取/解析失败只跳过该文档（与缺失同语义），
-            # 不再让整本书展开失败（全有或全无会放大损坏面）
+            # mar #4：单文档读取失败只跳过该文档（与缺失同语义），不让整本书
+            # 展开失败；内容损坏由后端按单文档 error 报告（mar #18 演进：展开
+            # 期不再 json 解析全文，仅正则探测 sheet 特征用于路由）
             try:
-                doc = json.loads(raw.read_text(encoding="utf-8")).get("doc", {})
-            except (OSError, json.JSONDecodeError) as e:
-                logging.getLogger(__name__).warning("跳过损坏文档 %s: %s", url, e)
+                text = raw.read_text(encoding="utf-8")
+            except OSError as e:
+                logging.getLogger(__name__).warning("跳过不可读文档 %s: %s", url, e)
                 continue
-            is_sheet = doc.get("type", "") == TYPE_SHEET or doc.get("format", "") == "lakesheet"
-            cat = Category.LAKE_SHEET if is_sheet else Category.LAKE_DOC
+            cat = Category.LAKE_SHEET if _SHEET_HINT_RE.search(text) else Category.LAKE_DOC
             rel = Path(book_dir, *[p for p in path_parts if p], title)
             entries.append(FileEntry(
                 rel, raw, cat, mtime,
