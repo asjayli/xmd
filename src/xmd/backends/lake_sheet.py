@@ -442,7 +442,8 @@ class LakeSheetBackend:
     """语雀表格 → CSV / Sheet Plus 后端（自行落盘）。"""
 
     def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
-        body = json.loads(source.read_text(encoding="utf-8")).get("doc", {}).get("body", "")
+        from xmd.backends import read_doc_json   # 延迟 import 避免包循环
+        body = read_doc_json(source).get("body", "")
         if not body:
             raise ConvertError("表格文档 body 为空")
         rows = parse_lakesheet(body)

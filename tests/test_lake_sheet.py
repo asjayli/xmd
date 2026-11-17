@@ -172,3 +172,14 @@ def _mk_zlib_body(data: dict) -> str:
     import zlib as _zlib
     return _json.dumps({"format": "lakesheet",
                         "sheet": _zlib.compress(_json.dumps(data).encode()).decode("latin-1")})
+
+
+def test_backend_corrupt_json_raises_convert_error(tmp_path):
+    # mar #13：损坏 json → ConvertError（error 粒度），与 lake_doc 对齐而非裸异常
+    from xmd.model import ConvertError
+    p = tmp_path / "bad.json"
+    p.write_text("{corrupted", encoding="utf-8")
+    entry = FileEntry(Path("书/坏"), p, Category.LAKE_SHEET, meta={})
+    task = Task(entry, tmp_path / "坏.csv", tmp_path / "坏.assets", False)
+    with pytest.raises(ConvertError):
+        LakeSheetBackend().convert(p, tmp_path / "坏.assets", task)
