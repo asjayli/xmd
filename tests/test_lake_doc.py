@@ -135,3 +135,44 @@ def test_backend_corrupt_json_raises_convert_error(tmp_path):
     src.write_text("{corrupted", encoding="utf-8")
     with pytest.raises(ConvertError):
         LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
+
+
+@pytest.mark.parametrize("src", [
+    "http://127.0.0.1:1/x.png",        # 环回
+    "http://169.254.169.254/latest/meta-data",   # 链路本地（云元数据）
+    "http://10.0.0.1/x.png",           # 私网 A
+    "http://192.168.1.1/x.png",        # 私网 C
+    "http://[::1]/x.png",              # IPv6 环回
+    "file:///etc/passwd",              # 非 http(s) 协议
+    "ftp://x/1.png",
+])
+def test_backend_blocks_intranet_image_src(tmp_path, monkeypatch, src):
+    # mar #9：环回/私网/链路本地/非法协议的 img src 不发起网络请求，正文给缺失提示
+    def must_not_call(url, timeout):
+        raise AssertionError(f"不应发起请求: {url}")
+
+    monkeypatch.setattr("xmd.backends.lake_doc.http_get", must_not_call)
+    doc = {"type": "Doc", "format": "lake", "body": f'<p><img src="{src}"/></p>', "body_asl": ""}
+    src_file = _write_doc(tmp_path, doc)
+    task = _task(tmp_path, {"download_image": True})
+    r = LakeDocBackend().convert(src_file, tmp_path / "标题.assets", task)
+    assert "[图片缺失" in r.body and src in r.body
+    assert "禁止" in r.body
+
+
+def test_backend_public_image_still_downloads(tmp_path, monkeypatch):
+    # mar #9 回归：https 公网地址不受 SSRF 校验影响（正常下载路径）
+    class FakeResp:
+        content = b"PNG"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("xmd.backends.lake_doc.http_get", lambda url, timeout: FakeResp())
+    doc = {"type": "Doc", "format": "lake", "body": '<p><img src="https://x/1.png"/></p>',
+           "body_asl": ""}
+    src_file = _write_doc(tmp_path, doc)
+    assets = tmp_path / "标题.assets"
+    r = LakeDocBackend().convert(src_file, assets, _task(tmp_path, {"download_image": True}))
+    assert (assets / "img_001.png").read_bytes() == b"PNG"

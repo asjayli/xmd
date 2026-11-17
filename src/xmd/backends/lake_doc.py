@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -296,6 +298,36 @@ def replace_latex_images(html: str, latex_dict: dict[str, str]) -> str:
 
 # ── 图片下载 ──────────────────────────────────────────────────────────────────
 
+def _ip_is_internal(ip) -> bool:
+    """环回/私网/链路本地地址一律视为内网（mar #9）。"""
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def is_forbidden_src(src: str) -> bool:
+    """图片地址 SSRF 校验（mar #9）：img src 完全来自不可信归档。
+
+    仅放行 http(s)；主机为 IP 字面量或域名解析出的任一 IP 命中
+    环回/私网/链路本地段即拒绝。域名解析失败（离线/不存在）不在此
+    拦截——交由下载流程按普通网络失败处理，保持公网路径不回归。
+    """
+    try:
+        parsed = urllib.parse.urlparse(src)
+    except ValueError:
+        return True
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return True
+    host = parsed.hostname
+    try:
+        ips = [ipaddress.ip_address(host.strip("[]"))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return False   # 无法解析 → 不拦截，下载自然失败
+        ips = [ipaddress.ip_address(info[4][0]) for info in infos]
+    return any(_ip_is_internal(ip) for ip in ips)
+
+
 def _download_image_with_retry(src: str):
     """
     下载单张图片，失败时做有限次数重试。
@@ -337,10 +369,17 @@ def download_images_to_assets(html: str, assets_dir: Path) -> str:
 
     # results[no] -> ("ok", content, ext) | ("fail", src, error)
     results: dict[int, tuple] = {}
+    # SSRF 预检（mar #9）：内网/非法协议地址不进入下载线程，按失败路径提示
+    downloadable = []
+    for no, image, src in tasks:
+        if is_forbidden_src(src):
+            results[no] = ("fail", src, ValueError("内网或非法地址，禁止下载"))
+        else:
+            downloadable.append((no, image, src))
     with ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_MAX_WORKERS) as executor:
         future_to_no = {
             executor.submit(_download_image_with_retry, src): (no, src)
-            for no, _image, src in tasks
+            for no, _image, src in downloadable
         }
         for future in as_completed(future_to_no):
             no, src = future_to_no[future]
