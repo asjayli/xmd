@@ -5,6 +5,12 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """mar #22：重试退避的 time.sleep 全部打桩（原文件真睡 3s+，现 <1s）。"""
+    monkeypatch.setattr("xmd.backends.lake_doc.time.sleep", lambda s: None)
+
 from xmd.backends.lake_doc import (
     LakeDocBackend,
     extract_latex_from_asl,
@@ -239,3 +245,69 @@ def test_download_write_failure_branch(tmp_path, monkeypatch):
     (assets / "img_001.png").mkdir()   # 同名目录占位 → write_bytes 必然 OSError
     outcome = _download_image_to_file(1, "https://x/1.png", assets)
     assert outcome[0] == "write_fail" and isinstance(outcome[2], OSError)
+
+
+def test_table_cell_image_lifted_exact_syntax():
+    # mar #22：原 or 弱断言拆分为精确图片语法断言
+    html = ('<table><tbody><tr><td>a</td>'
+            '<td><img src="https://x/1.png"/></td></tr></tbody></table>')
+    md = html_to_markdown(html)
+    assert "![](https://x/1.png)" in md   # 图片语法完整保留（非裸链接文本）
+
+
+def test_heading_image_lifted():
+    # mar #22：标题内图片同样提升（_HEADING_RE 分支）
+    html = '<h2>章题<img src="https://x/2.png"/></h2><p>正文</p>'
+    md = html_to_markdown(html)
+    assert "## 章题" in md
+    assert "![](https://x/2.png)" in md   # 图片不随标题行丢失
+
+
+def test_download_write_failure_notice_in_body(tmp_path, monkeypatch):
+    # mar #22：写盘 OSError 分支的正文文案
+    class FakeResp:
+        content = b"PNG"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("xmd.backends.lake_doc.http_get", lambda url, timeout: FakeResp())
+    assets = tmp_path / "标题.assets"
+    assets.mkdir()
+    (assets / "img_001.png").mkdir()   # 同名目录占位 → 写盘必 OSError
+    doc = {"type": "Doc", "format": "lake",
+           "body": '<p><img src="https://x/1.png"/></p>', "body_asl": ""}
+    src = _write_doc(tmp_path, doc)
+    r = LakeDocBackend().convert(src, assets, _task(tmp_path, {"download_image": True}))
+    assert "[图片缺失：写入失败]" in r.body and "https://x/1.png" in r.body
+
+
+def test_download_retry_succeeds_after_first_failure(tmp_path, monkeypatch):
+    # mar #22：首失败次成功路径——重试后拿到响应；退避 sleep(1) 已被桩记录
+    sleeps: list = []
+    monkeypatch.setattr("xmd.backends.lake_doc.time.sleep",
+                        lambda s: sleeps.append(s))
+    state = {"n": 0}
+
+    class FakeResp:
+        content = b"PNG"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+    def flaky(url, timeout):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ConnectionError("first attempt down")
+        return FakeResp()
+
+    monkeypatch.setattr("xmd.backends.lake_doc.http_get", flaky)
+    doc = {"type": "Doc", "format": "lake",
+           "body": '<p><img src="https://x/1.png"/></p>', "body_asl": ""}
+    src = _write_doc(tmp_path, doc)
+    assets = tmp_path / "标题.assets"
+    r = LakeDocBackend().convert(src, assets, _task(tmp_path, {"download_image": True}))
+    assert (assets / "img_001.png").read_bytes() == b"PNG"   # 重试成功落盘
+    assert sleeps == [1]    # 第 1 次失败后退避 1s（桩记录，无真睡）

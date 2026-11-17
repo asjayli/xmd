@@ -183,3 +183,29 @@ def test_backend_corrupt_json_raises_convert_error(tmp_path):
     task = Task(entry, tmp_path / "坏.csv", tmp_path / "坏.assets", False)
     with pytest.raises(ConvertError):
         LakeSheetBackend().convert(p, tmp_path / "坏.assets", task)
+
+
+def test_backend_unparseable_sheet_raises_convert_error(tmp_path):
+    # mar #34：body 合法 json 但表格数据解析失败 → ConvertError（error 粒度）
+    from xmd.model import ConvertError
+    body = json.dumps({"format": "lakesheet", "sheet": "垃圾数据不是压缩流"})
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"doc": {"type": "Sheet", "format": "lakesheet",
+                                     "body": body}}), encoding="utf-8")
+    entry = FileEntry(Path("书/坏表"), p, Category.LAKE_SHEET, meta={})
+    task = Task(entry, tmp_path / "坏表.csv", tmp_path / "坏表.assets", False)
+    with pytest.raises(ConvertError, match="解析失败|为空"):
+        LakeSheetBackend().convert(p, tmp_path / "坏表.assets", task)
+
+
+def test_rows_to_sheet_plus_random_ids_format():
+    # mar #34：随机 ID 格式断言（6 位/16 位字母数字，原断言仅 startswith）
+    import re
+    md = rows_to_sheet_plus_format([["a"], ["1"]], "T", "")
+    m = re.search(r"```sheet\n(.*?)\n```", md, re.S)
+    obj = json.loads(m.group(1))
+    assert re.fullmatch(r"[A-Za-z0-9]{6}", obj["id"])
+    assert len(obj["sheetOrder"]) == 1
+    assert re.fullmatch(r"[A-Za-z0-9]{16}", obj["sheetOrder"][0])
+    assert set(obj["styles"]) and all(
+        re.fullmatch(r"[A-Za-z0-9]{6}", k) for k in obj["styles"])

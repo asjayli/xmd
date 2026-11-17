@@ -72,7 +72,7 @@ def test_process_one_note_pdf_ok(tmp_path, tcp_pdf):
     r = process_one(task)
     assert r.status == "ok"
     assert (tmp_path / "out" / "tcp.md").exists()
-    assert r.images >= 1
+    assert r.images >= 1   # 绑定 pymupdf 对 fixture 的抽图行为（升级预期复核点）
 
 
 def test_process_one_empty_body_marks_empty(tmp_path, monkeypatch):
@@ -461,3 +461,128 @@ def test_run_mineru_rate_split_across_jobs(tmp_path, monkeypatch):
     assert captured["ctx"].backend_opts["rate_per_min"] == 2    # auto 同样均分
     run(src, tmp_path / "o4", jobs=4)                           # 非 mineru 后端不动
     assert captured["ctx"].backend_opts is None
+
+
+# ---- mar #22 测试缺口补齐 ----
+
+def test_preprocess_triple_conflict_chain(tmp_path):
+    # __N 冲突链：a__pdf.pdf 先占 a__pdf.md 后，a.pdf 的同目标冲突需走到 __2
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [
+        _entry(root, "a__pdf.pdf", Category.PDF),       # 先占 a__pdf.md
+        _entry(root, "a.note.pdf", Category.NOTE_PDF),  # 占 a.md
+        _entry(root, "a.pdf", Category.PDF),            # a.md✗ → a__pdf.md✗ → a__pdf__2.md
+    ]
+    tasks = preprocess(files, tmp_path / "out")
+    outs = [t.output_md.name for t in tasks]
+    assert outs == ["a__pdf.md", "a.md", "a__pdf__2.md"]   # 三路径互异
+    assert tasks[2].collision is True
+
+
+def test_run_only_full_chain(tmp_path):
+    # run(only) 全链路：首轮极小阈值产 need-review → 二轮仅子集重转，
+    # convert.log/summary/输出内容均只反映子集
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("短", encoding="utf-8")
+    (src / "b.md").write_text("短", encoding="utf-8")
+    out = tmp_path / "out"
+    s1 = run(src, out, jobs=1, min_chars=10**9)
+    assert s1["need_review"] == 2
+    (src / "a.md").write_text("补长后的正文内容 a", encoding="utf-8")
+    s2 = run(src, out, jobs=1, min_chars=5, only={"a.md"}, force=True)
+    assert s2["total"] == 1 and s2["ok"] == 1     # 仅子集重转
+    log2 = (out / "convert.log").read_text(encoding="utf-8")
+    assert "a.md | ok |" in log2 and "b.md" not in log2
+    assert "补长后的正文内容 a" in (out / "a.md").read_text(encoding="utf-8")
+
+
+def test_no_image_execution_layer(tmp_path, tcp_pdf, monkeypatch):
+    # --no-image 执行层：PDF 不补抽图（extract_images 计数 0）
+    import xmd.runner as rm
+    _worker_init(Ctx(force=True, min_chars=5, no_image=True))
+    called = {"n": 0}
+
+    def fake_extract(*a, **k):
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(rm, "extract_images", fake_extract)
+    entry = FileEntry(Path(tcp_pdf.name), tcp_pdf, Category.NOTE_PDF)
+    task = Task(entry, tmp_path / "tcp.md", tmp_path / "tcp.assets", False)
+    r = process_one(task)
+    assert called["n"] == 0
+    assert r.status == "ok" and r.images == 0
+
+
+def test_no_image_lakebook_download_linkage(tmp_path, monkeypatch):
+    # --no-image 联动：lakebook 任务 download_image=False → 不下载，正文保留外链
+    import shutil
+    from conftest import make_lakebook
+    monkeypatch.setattr("xmd.backends.lake_doc.http_get",
+                        lambda url, timeout: (_ for _ in ()).throw(AssertionError("不应下载")))
+    src = tmp_path / "src"
+    src.mkdir()
+    make_lakebook(src / "book.lakebook",
+                  [{"url": "d1", "doc": {"type": "Doc", "format": "lake",
+                                         "body": '<p><img src="https://pub/1.png"/></p>',
+                                         "body_asl": ""}}],
+                  [{"title": "文档", "type": "DOC", "url": "d1", "level": 0, "uuid": "d1"}])
+    out = tmp_path / "out"
+    run(src, out, jobs=1, min_chars=1, no_image=True)
+    text = (out / "book" / "文档.md").read_text(encoding="utf-8")
+    assert "https://pub/1.png" in text and "[图片缺失" not in text
+
+
+def test_dispatch_crash_status_enters_need_review(tmp_path, monkeypatch):
+    # crash 状态（mar #22）：worker 抛非 ConvertError 异常由 _dispatch 兜底 →
+    # status=crash 且进 need-review.csv
+    from concurrent.futures import Future
+    import xmd.runner as rm
+
+    class CrashPool:
+        def __init__(self, *a, **k):
+            pass
+
+        def submit(self, fn, t):
+            f = Future()
+            f.set_exception(RuntimeError("worker 内存崩坏"))
+            return f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(rm, "ProcessPoolExecutor", CrashPool)
+    root = tmp_path / "src"
+    root.mkdir()
+    p = root / "x.note.pdf"
+    p.write_bytes(b"")
+    tasks = rm.preprocess([FileEntry(Path("x.note.pdf"), p, Category.NOTE_PDF)],
+                          tmp_path / "out")
+    out = tmp_path / "out"
+    out.mkdir()
+    results = rm._dispatch(tasks, Ctx(force=True, min_chars=1), jobs=1, output_root=out)
+    assert len(results) == 1
+    r = results[0]
+    assert r.status == "crash" and "RuntimeError" in (r.error or "")
+    rm._write_need_review(out, results)
+    assert "crash" in (out / "need-review.csv").read_text(encoding="utf-8-sig")
+
+
+# ---- mar #33 金样加固：库行为断言注记 + 纯工程不变量 ----
+
+def test_pdf_fixtures_status_invariants(tmp_path, tcp_pdf, blinko_pdf, finance_pdf):
+    # 工程自身不变量（不绑定 markitdown/pymupdf 外部行为，预期升级点无需复核）：
+    # 任一 fixture 经 process_one 后状态属合法集合且输出文件落盘
+    _worker_init(Ctx(force=True, min_chars=1))
+    for pdf in (tcp_pdf, blinko_pdf, finance_pdf):
+        entry = FileEntry(Path(pdf.name), pdf, Category.NOTE_PDF)
+        out_md = tmp_path / "out" / f"{pdf.stem}.md"
+        task = Task(entry, out_md, tmp_path / "out" / f"{pdf.stem}.assets", False)
+        r = process_one(task)
+        assert r.status in ("ok", "need_review", "empty")
+        assert out_md.exists()
