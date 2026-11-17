@@ -96,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--retry-review: {len(missing_src)} 条记录源文件已不存在，忽略：{preview}{suffix}",
                   file=sys.stderr)
     backend_opts = None
+    if args.verbose:   # mar #26：接线 DEBUG 日志（原为源自 youdao 的悬空参数）
+        import logging
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
     if args.backend in ("mineru", "auto"):
         backend_opts = {
             "token": args.mineru_token,

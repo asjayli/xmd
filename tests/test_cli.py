@@ -240,3 +240,25 @@ def test_cli_retry_review_no_false_warning_for_virtual_paths(tmp_path, monkeypat
     err = capsys.readouterr().err
     assert "源文件已不存在" in err and "ghost/x.md" in err   # 真实缺失仍预警
     assert "book/文档" not in err   # 归档虚拟路径不误报
+
+
+def test_cli_verbose_enables_debug_logging(tmp_path, monkeypatch):
+    # mar #26：--verbose 接线 DEBUG 日志（原为悬空参数）
+    import logging
+    calls = {}
+    real_basicConfig = logging.basicConfig
+
+    def spy_basicConfig(*a, **k):
+        calls.update(k)
+        return real_basicConfig(*a, **k)
+
+    monkeypatch.setattr(logging, "basicConfig", spy_basicConfig)
+
+    def fake_run(*a, **k):
+        return {"total": 0}
+
+    monkeypatch.setattr("xmd.cli.run", fake_run)
+    src = tmp_path / "src"
+    src.mkdir()
+    main([str(src), "-o", str(tmp_path / "o"), "--verbose"])
+    assert calls.get("level") == logging.DEBUG

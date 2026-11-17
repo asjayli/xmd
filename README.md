@@ -44,6 +44,9 @@ export MINERU_TOKEN=<token>   # backend=mineru|auto 的复杂文件需要
 
 # 续传与重试
 xmd <目录> -o out/ --force | --retry-review
+
+# 详细日志（DEBUG 级：含展开跳过的损坏文档、限流等）
+xmd <目录> -o out/ --verbose
 ```
 
 ## 输出布局
@@ -66,7 +69,6 @@ ok · skipped（续传跳过）· error · need_review · copied · collision ·
 - MinerU 每日免费额度有限：额度即停 + 跨天续传（--retry-review）
 - 不转音频、不解压普通压缩包：原样复制
 - 跳过隐藏文件（. 开头）
-- --retry-review 的源存在性预检提示对 .lakebook 展开的虚拟路径会误报「源文件已不存在」（仅 stderr 提示，不影响重转匹配）
 
 ## 开发
 ```bash
