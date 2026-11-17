@@ -269,7 +269,7 @@ def test_expand_single_corrupt_doc_skipped(tmp_path):
     entries = _expand(p)
     # mar #18 演进：展开期不再 json 解析（仅正则分类），损坏文档也成为任务，
     # 由后端按单文档 error 报告——整书仍不失败
-    assert [e.meta["url"] for e in entries] == ["d1", "d2"]
+    assert [e.meta["title"] for e in entries] == ["好文档", "坏文档"]
     out = tmp_path / "out"
     s = run(tmp_path, out, jobs=1, min_chars=1)
     assert s["error"] == 1 and s["ok"] == 1   # 损坏=单文档 error，完好=ok

@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from xmd.classifier import Category, classify
+from xmd.classifier import classify
 from xmd.model import FileEntry
 
 

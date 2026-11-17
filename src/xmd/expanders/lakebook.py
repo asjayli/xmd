@@ -74,8 +74,12 @@ def _extract_tar(tar_file: Path, target_dir: Path) -> None:
 
 # ── 元数据解析（迁自 lakebook.metadata.read_toc_and_book_info）────────────────
 
-def _read_toc_and_book_info(repo_dir: Path) -> tuple[list, str]:
-    """读取 $meta.json（双层 JSON + tocYml YAML），返回 (toc, book_name)。"""
+def _read_toc(repo_dir: Path) -> list:
+    """读取 $meta.json（双层 JSON + tocYml YAML），返回 TOC 列表。
+
+    （mar #28：book_name 推导为死代码已删——输出目录名以归档文件名为权威，
+    知识库名从不参与路径计算。）
+    """
     meta_file = json.loads((repo_dir / META_JSON).read_text(encoding="utf-8"))
     meta_str = meta_file.get("meta", "")
     if not isinstance(meta_str, str) or not meta_str.strip():
@@ -86,18 +90,7 @@ def _read_toc_and_book_info(repo_dir: Path) -> tuple[list, str]:
     # TOC 以 YAML 字符串形式嵌在 tocYml 字段中；safe_load 关闭任意对象反序列化，
     # 空 TOC（返回 None）兜底为空列表
     toc_str = book_info.get("tocYml") or ""
-    toc = yaml.safe_load(toc_str) or []
-
-    book_name = (book_info.get("name") or "").strip()
-    if not book_name:
-        book_path = book_info.get("path") or ""
-        if book_path:
-            parts = book_path.rstrip("/").split("/")
-            if parts:
-                book_name = parts[-1]
-    if not book_name:
-        book_name = "未命名知识库"
-    return toc, book_name
+    return yaml.safe_load(toc_str) or []
 
 
 # ── 目录树还原（迁自 lakebook.converter，算法注释逐字保留）────────────────────
@@ -193,7 +186,7 @@ def expand_lakebook(archive: Path, *, download_image: bool = True,
         repo_dir = next((Path(e.path) for e in os.scandir(tmp_dir) if e.is_dir()), None)
         if repo_dir is None:
             raise ExpandError("解压后未找到内容目录（格式无效）")
-        toc, _book_name = _read_toc_and_book_info(repo_dir)
+        toc = _read_toc(repo_dir)
 
         book_dir = sanitize_filename(archive.name.removesuffix(".lakebook"))
         mtime = archive.stat().st_mtime
@@ -222,7 +215,7 @@ def expand_lakebook(archive: Path, *, download_image: bool = True,
             rel = Path(book_dir, *[p for p in path_parts if p], title)
             entries.append(FileEntry(
                 rel, raw, cat, mtime,
-                {"title": title, "url": url,
+                {"title": title,
                  "download_image": download_image, "sheet_format": sheet_format}))
         return entries, tmp_dir
     except ExpandError:

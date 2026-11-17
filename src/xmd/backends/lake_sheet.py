@@ -462,4 +462,6 @@ class LakeSheetBackend:
             with out.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                 writer.writerows([[csv_safe(c) for c in row] for row in rows])
-        return ConvertResult(body="", handled_images=True, handled_output=True)
+        # handled_images=False：表格无图片语义（原 True 与字段注释「后端已产出
+        # 图片」不符；LAKE_SHEET 恒不进 PDF 补抽分支，行为不变——mar #27）
+        return ConvertResult(body="", handled_images=False, handled_output=True)

@@ -1,6 +1,5 @@
-"""批量调度：冲突解析、worker 单例、单文件流水线。
+"""批量调度：冲突解析、worker 单例、单文件流水线与 run 编排。
 
-编排（run/_dispatch）在 Phase 7 追加。
 后端可插拔：Ctx.backend 选 markitdown|pdf-inspector|mineru|auto。
 MinerU 额度即停：_dispatch 识别 MINERU_DAILY_LIMIT 后停止提交剩余（贯彻不用优先额度）。
 容器展开（.lakebook）：expanders 在主进程展开为虚拟 FileEntry，随批共享并行/续传/报告。
@@ -188,7 +187,7 @@ def process_one(task: Task) -> Result:
     return Result(rel, status, len(stripped), len(image_refs), None)
 
 
-# ---- 编排（Phase 7）----
+# ---- 编排 ----
 
 # MinerU 每日免费额度耗尽标记（见 xmd.backends.mineru.DAILY_LIMIT_MARK）
 _DAILY_LIMIT_MARK = "MINERU_DAILY_LIMIT"

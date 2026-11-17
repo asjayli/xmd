@@ -40,7 +40,7 @@ class FileEntry:
 
     散文件：rel/abs 指向源文件，mtime=None（process_one 现场 stat）。
     虚拟任务（lake_doc/lake_sheet）：abs 指向 tmp 内 doc json，mtime=归档 mtime，
-    meta 携带 {title, url, download_image, sheet_format}。
+    meta 携带 {title, download_image, sheet_format}（mar #28：url 无消费方已删）。
     """
     rel_path: Path
     abs_path: Path
