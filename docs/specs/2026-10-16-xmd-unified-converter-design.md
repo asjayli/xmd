@@ -76,10 +76,12 @@ xmd/
 │   ├── image_extractor.py    # PDF 抽图（自 youdao）
 │   ├── logging_setup.py      # pdfminer 静音（自 youdao）
 │   ├── expanders/
-│   │   ├── __init__.py       # 注册表 {扩展名: Expander}
+│   │   ├── __init__.py       # （演进项：注册表 {扩展名: Expander} 未落地，
+│   │   │                     #   现行扩展点硬编码于 runner._expand_inputs）
 │   │   └── lakebook.py       # tar 安全解压 + metadata 解析 + TOC 建树
 │   └── backends/
-│       ├── __init__.py       # category(+backend 参数) → Converter 工厂
+│       ├── __init__.py       # （演进项：category→Converter 工厂注册表未落地，
+│       │                     #   现行选择在 runner._converter_for/_build_converter）
 │       ├── markitdown_backend.py   # markitdown 文本提取（默认）
 │       ├── pdf_inspector.py        # pdf-inspector 轻量纯文本（optional extra）
 │       ├── mineru.py               # MinerU 在线 API（agent/precision/限流/额度即停）
@@ -105,15 +107,24 @@ class Category(StrEnum):
     SKIP = "skip"             # .ppt/.mp3/.rar/.zip/.7z/其他
 
 @dataclass(frozen=True)
-class Task:
-    source: Path        # 物理源（散文件 或 tmp 内 doc json）
-    rel_path: str       # 报告/日志/续传键（lake 任务: "<归档名>/<TOC目录…>/<标题>"）
-    output_path: Path   # 输出文件（.md；lake_sheet+csv 格式为 .csv）
-    assets_dir: Path    # {stem}.assets/
+class FileEntry:                 # walker/expander 产出的待转换条目（实施期拆出，
+    rel_path: Path               #   实际落地以本节下方「实施修正」为准）
+    abs_path: Path
     category: Category
-    src_mtime: float    # 续传基准（散文件=自身 mtime；lake 任务=归档 mtime）
-    meta: dict          # lake: {title, download_image, sheet_format}；散文件 {}
+    mtime: float | None          # 散文件 None（process_one 现场 stat）；lake 任务=归档 mtime
+    meta: dict                   # lake: {title, download_image, sheet_format}；散文件 {}
+
+@dataclass(frozen=True)
+class Task:
+    entry: FileEntry             # 组合模型：源信息内聚于 entry（mar #25 实施修正）
+    output_path: Path            # 输出文件（.md；lake_sheet+csv 格式为 .csv）
+    assets_dir: Path             # {stem}.assets/
     collision: bool
+
+> **实施修正（mar #25）**：原设计的 Task 扁平字段（source/rel_path/category/
+> src_mtime/meta）实施时拆为 FileEntry+Task 组合模型——walker 与 expander
+> 产出同构 FileEntry，runner.preprocess 解析输出路径后组装 Task；日志/续传
+> 键统一取 task.entry.rel_path。
 
 @dataclass
 class ConvertResult:
@@ -169,7 +180,7 @@ class Expander(Protocol):
 ### 5.5 runner（自 youdao 扩展）
 - `run(inputs, output, ...)`：inputs 支持文件与目录混合
 - walk 后：LAKEBOOK 条目逐个交给 expander（主进程串行，IO 型），散文件任务与展开任务合并进 preprocess
-- worker 进程内按 category 选择后端（`_build_converter` 扩展为注册表查找；LAKE_DOC/LAKE_SHEET 后端从 `task.meta` 取下载/格式选项）
+- worker 进程内按 category 选择后端（演进项：注册表查找未落地，现行 `runner._converter_for` 按 category 硬编码分发——YAGNI：当前仅 lake 族两后端需按类别分流，注册表抽象待第三类容器出现时再引入；LAKE_DOC/LAKE_SHEET 后端从 `task.entry.meta` 取下载/格式选项）
 - 续传判定统一用 `task.src_mtime`；`--force`/`--retry-review` 语义不变
 - tmp 清理纳入 finally；报告三件套不变
 
