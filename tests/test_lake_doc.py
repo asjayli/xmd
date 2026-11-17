@@ -176,3 +176,46 @@ def test_backend_public_image_still_downloads(tmp_path, monkeypatch):
     assets = tmp_path / "标题.assets"
     r = LakeDocBackend().convert(src_file, assets, _task(tmp_path, {"download_image": True}))
     assert (assets / "img_001.png").read_bytes() == b"PNG"
+
+
+def test_backend_body_parsed_at_most_twice(tmp_path, monkeypatch):
+    # mar #6：含图片+公式文档的 body 解析次数 ≤2（latex 迁移函数 1 次 + 主 soup 1 次；
+    # body_asl 是独立输入不计入——与 mar #6 原始口径一致）
+    import xmd.backends.lake_doc as mod
+    calls: list = []
+    real = mod.BeautifulSoup
+
+    class Counting(real):
+        def __init__(self, html, *a, **k):
+            calls.append(html if isinstance(html, str) else "<soup>")
+            super().__init__(html, *a, **k)
+
+    monkeypatch.setattr(mod, "BeautifulSoup", Counting)
+    doc = {"type": "Doc", "format": "lake",
+           "body": '<p>正文标记Xy7 <img src="u1"/><img src="https://x/1.png"/></p>',
+           "body_asl": _card("u1", "E=mc^2")}
+    src = _write_doc(tmp_path, doc)
+    r = LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
+    assert "E=mc^2" in r.body   # 行为不变：公式还原正常
+    body_parses = [h for h in calls if isinstance(h, str) and "正文标记Xy7" in h]
+    assert len(body_parses) == 2
+
+
+def test_backend_image_doc_single_body_parse(tmp_path, monkeypatch):
+    # mar #6：纯图片文档 body 只解析 1 次（下载/提升复用同一棵树）
+    import xmd.backends.lake_doc as mod
+    calls: list = []
+    real = mod.BeautifulSoup
+
+    class Counting(real):
+        def __init__(self, html, *a, **k):
+            calls.append(html if isinstance(html, str) else "<soup>")
+            super().__init__(html, *a, **k)
+
+    monkeypatch.setattr(mod, "BeautifulSoup", Counting)
+    doc = {"type": "Doc", "format": "lake",
+           "body": '<p>正文标记Xy7 <img src="https://x/1.png"/></p>', "body_asl": ""}
+    src = _write_doc(tmp_path, doc)
+    LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
+    body_parses = [h for h in calls if isinstance(h, str) and "正文标记Xy7" in h]
+    assert len(body_parses) == 1

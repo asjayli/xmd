@@ -106,10 +106,10 @@ _HEADING_RE = re.compile(r"^h[1-6]$")
 _TABLE_ROOT = ("table", "tbody", "thead", "tfoot")
 
 
-def _lift_embedded_images(html: str) -> str:
+def _lift_embedded_images_in(soup) -> None:
     """
     将表格单元格（td/th）与标题（h1-h6）内的 <img> 提取到容器之外，
-    作为独立段落紧随其后插入。
+    作为独立段落紧随其后插入（soup 原位修改，mar #6 单次解析 core）。
 
     GFM 表格单元格与标题行不支持内嵌图片：markdownify 转换这些容器时会
     丢弃其中的 <img>，造成图片静默丢失。本函数在交给 markdownify 之前做
@@ -118,13 +118,8 @@ def _lift_embedded_images(html: str) -> str:
     但内容不再丢失。
 
     Args:
-        html: 已完成图片下载与 src 本地化的 body HTML 字符串
-
-    Returns:
-        重排后的 HTML 字符串；无受限容器内图片时原样返回
+        soup: 已完成图片下载与 src 本地化的 body 树
     """
-    soup = BeautifulSoup(html, "html.parser")
-
     lifts = []  # [(img, anchor_node), ...]  按文档顺序
     for img in soup.find_all("img"):
         # 沿父链找最近的受限容器（单元格或标题）
@@ -165,7 +160,7 @@ def _lift_embedded_images(html: str) -> str:
         lifts.append((img, anchor))
 
     # 同一锚点下按文档顺序依次追加：用尾指针链式 insert_after，避免后插
-    # 的节点插到前面（insert_after 总是紧贴锚点）导致顺序颠倒。
+    # 节点插到前面（insert_after 总是紧贴锚点）导致顺序颠倒。
     tails: dict[object, object] = {}
     for img, anchor in lifts:
         p = soup.new_tag("p")
@@ -178,7 +173,23 @@ def _lift_embedded_images(html: str) -> str:
             anchor.insert_after(p)
         tails[key] = p
 
+
+def _lift_embedded_images(html: str) -> str:
+    """str 包装（兼容既有调用/测试）：parse → core → 序列化。"""
+    soup = BeautifulSoup(html, "html.parser")
+    _lift_embedded_images_in(soup)
     return str(soup)
+
+
+def _soup_to_markdown(soup) -> str:
+    """soup → Markdown（先提升受限容器图片，再交 markdownify 一次转换）。"""
+    _lift_embedded_images_in(soup)
+    return md_convert(
+        str(soup),
+        heading_style=DEFAULT_HEADING_STYLE,
+        code_language_callback=_extract_code_language,
+        bullets="-",
+    )
 
 
 def html_to_markdown(html: str) -> str:
@@ -193,14 +204,7 @@ def html_to_markdown(html: str) -> str:
     Returns:
         Markdown 格式字符串
     """
-    # 先把表格单元格/标题等受限容器内的图片提升出来，避免 markdownify 丢弃
-    html = _lift_embedded_images(html)
-    return md_convert(
-        html,
-        heading_style=DEFAULT_HEADING_STYLE,
-        code_language_callback=_extract_code_language,
-        bullets="-",
-    )
+    return _soup_to_markdown(BeautifulSoup(html, "html.parser"))
 
 
 # ── LaTeX 公式处理 ────────────────────────────────────────────────────────────
@@ -353,18 +357,18 @@ def _download_image_with_retry(src: str):
     raise last_error
 
 
-def download_images_to_assets(html: str, assets_dir: Path) -> str:
-    """下载 HTML 中所有外链图片到 assets_dir（img_NNN.ext），src 改相对引用。
+def download_images_to_soup(soup, assets_dir: Path) -> None:
+    """下载 soup 中所有外链图片到 assets_dir（img_NNN.ext），src 原位改相对引用。
 
     失败（重试 IMAGE_DOWNLOAD_MAX_ATTEMPTS 次）→ 原位写 [图片缺失：原因] URL 文本。
     并发下载仅获取字节；写盘与 HTML 改写串行（编号/文件名稳定）。
+    soup 原位修改（mar #6：body 只解析一次，本函数不再独立 parse）。
     """
-    bs = BeautifulSoup(html, "html.parser")
-    img_tags = bs.find_all("img")
+    img_tags = soup.find_all("img")
     tasks = [(no, image, image.get("src", ""))
              for no, image in enumerate(img_tags, start=1) if image.get("src")]
     if not tasks:
-        return html
+        return
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     # results[no] -> ("ok", content, ext) | ("fail", src, error)
@@ -406,11 +410,17 @@ def download_images_to_assets(html: str, assets_dir: Path) -> str:
                 if (image.get("title") or "").strip() == "image":
                     del image["title"]
             except OSError:
-                image.replace_with(bs.new_string(f"\n[图片缺失：写入失败] {src}\n"))
+                image.replace_with(soup.new_string(f"\n[图片缺失：写入失败] {src}\n"))
         else:
             reason = f"下载失败：{outcome[2]}" if outcome else "下载失败，请手动处理"
-            image.replace_with(bs.new_string(f"\n[图片缺失：{reason}] {src}\n"))
-    return str(bs)
+            image.replace_with(soup.new_string(f"\n[图片缺失：{reason}] {src}\n"))
+
+
+def download_images_to_assets(html: str, assets_dir: Path) -> str:
+    """str 包装（兼容既有调用/测试）：parse → core → 序列化。"""
+    soup = BeautifulSoup(html, "html.parser")
+    download_images_to_soup(soup, assets_dir)
+    return str(soup)
 
 
 class LakeDocBackend:
@@ -426,8 +436,11 @@ class LakeDocBackend:
         # body 是完整的渲染 HTML；若 body 为空（极少数情况），回退到 body_asl
         html = doc.get("body") or body_asl
         if latex_dict:
+            # 迁移函数签名只收 str（保真约束）：其内部对 body 解析 1 次
             html = replace_latex_images(html, latex_dict)
+        # mar #6：body 此后只主动解析 1 次，下载与图片提升均在该树上原位完成
+        soup = BeautifulSoup(html, "html.parser")
         if task.entry.meta.get("download_image", True):
-            html = download_images_to_assets(html, assets_dir)
-        markdown_content = pretty_md(html_to_markdown(html))
+            download_images_to_soup(soup, assets_dir)
+        markdown_content = pretty_md(_soup_to_markdown(soup))
         return ConvertResult(body=markdown_content, handled_images=True)
