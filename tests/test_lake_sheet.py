@@ -3,6 +3,8 @@ import json
 import zlib
 from pathlib import Path
 
+import pytest
+
 from xmd.backends.lake_sheet import LakeSheetBackend, parse_lakesheet, rows_to_sheet_plus_format
 from xmd.model import Category, FileEntry, Task
 
@@ -127,3 +129,46 @@ def test_backend_csv_formula_injection_neutralized(tmp_path):
     assert rows[2] == ["'+100", "'-200"]
     assert rows[3] == ["'@cmd", "普通"]   # 普通单元格无前缀、逐字节不变
     assert rows[1][1] == "1+1 结果"   # 非开头的 + 不受影响
+
+
+def test_parse_decompress_bomb_raises_convert_error(monkeypatch):
+    # mar #10：zlib 展开超限 → ConvertError（error 粒度，不静默 None 也不 OOM）
+    import json as _json
+    import zlib as _zlib
+    import xmd.backends.lake_sheet as mod
+    from xmd.model import ConvertError
+    monkeypatch.setattr(mod, "_MAX_DECOMPRESSED_BYTES", 64)   # 测试用小上限
+    big = {"data": {str(i): {"0": {"v": "x" * 40}} for i in range(8)}}
+    body = _json.dumps({"format": "lakesheet",
+                        "sheet": _zlib.compress(_json.dumps(big).encode()).decode("latin-1")})
+    with pytest.raises(ConvertError):
+        parse_lakesheet(body)
+
+
+def test_parse_decompress_bomb_gzip_raises(monkeypatch):
+    # mar #10：gzip 路径同样受限长约束
+    import gzip as _gzip
+    import json as _json
+    import xmd.backends.lake_sheet as mod
+    from xmd.model import ConvertError
+    monkeypatch.setattr(mod, "_MAX_DECOMPRESSED_BYTES", 64)
+    big = {"data": {"0": {"0": {"v": "y" * 200}}}}
+    body = _json.dumps({"format": "lakesheet",
+                        "sheet": _gzip.compress(_json.dumps(big).encode()).decode("latin-1")})
+    with pytest.raises(ConvertError):
+        parse_lakesheet(body)
+
+
+def test_parse_small_sheet_within_limit(monkeypatch):
+    # mar #10 回归：上限内的正常表格不受影响
+    import xmd.backends.lake_sheet as mod
+    monkeypatch.setattr(mod, "_MAX_DECOMPRESSED_BYTES", 64 * 1024 * 1024)
+    body = _mk_zlib_body({"data": {"0": {"0": {"v": "a"}, "1": {"v": "b"}}}})
+    assert parse_lakesheet(body) == [["a", "b"]]
+
+
+def _mk_zlib_body(data: dict) -> str:
+    import json as _json
+    import zlib as _zlib
+    return _json.dumps({"format": "lakesheet",
+                        "sheet": _zlib.compress(_json.dumps(data).encode()).decode("latin-1")})

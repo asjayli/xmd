@@ -30,6 +30,9 @@ from xmd.router import mineru_api_for
 
 _BASE = "https://mineru.net"
 
+# zip 成员累计解压上限（mar #10：zip 炸弹防御；测试可 monkeypatch 调小）
+_MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024
+
 # 错误码分级（HTML 文档 TABLE 10 / TABLE 17）
 _DAILY_LIMIT = {-60018, -60019}          # 每日上限 → 即停
 _RETRYABLE = {-60009, -10001, -60007, -60010}    # 队列满/服务异常/模型暂不可用/解析失败(请稍后再试) → 退避重试
@@ -248,6 +251,11 @@ class MinerUConverter:
     # ---- zip 解析 ----
     def _extract_zip(self, zip_url: str, work_dir: Path) -> tuple[str, Path]:
         z = zipfile.ZipFile(io.BytesIO(self._get_bytes(zip_url)))
+        # 解压前按成员 file_size 累计校验上限（mar #10：zip 炸弹防御）
+        total = sum(info.file_size for info in z.infolist())
+        if total > _MAX_ZIP_TOTAL_BYTES:
+            raise ConvertError(
+                f"zip 解压总大小超限({total} > {_MAX_ZIP_TOTAL_BYTES}，疑似解压炸弹)")
         z.extractall(str(work_dir))
         md_files = list(work_dir.rglob("full.md")) or list(work_dir.rglob("*.md"))
         if not md_files:

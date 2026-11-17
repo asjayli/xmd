@@ -8,7 +8,6 @@ empty/min_chars 判定，见设计文档 5.3）。
 from __future__ import annotations
 
 import csv
-import gzip
 import json
 import random
 import string
@@ -18,6 +17,22 @@ from typing import List, Optional
 
 from xmd.model import ConvertError, ConvertResult, Task
 from xmd.writer import csv_safe
+
+# 单文档解压大小上限（mar #10：解压炸弹防御；测试可 monkeypatch 调小）
+_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+
+
+def _bounded_decompress(data: bytes, wbits: int, max_length: int) -> bytes:
+    """限长解压：展开结果超过 max_length 字节即抛 ConvertError（mar #10）。
+
+    用 decompressobj 的 max_length 截断输出——超限时 unconsumed_tail 非空且
+    输出已达上限，不会把炸弹数据全量解进内存。
+    """
+    d = zlib.decompressobj(wbits)
+    out = d.decompress(data, max_length + 1)
+    if len(out) > max_length or d.unconsumed_tail:
+        raise ConvertError(f"表格解压数据超限（>{max_length // (1024 * 1024)}MB，疑似解压炸弹）")
+    return out
 
 # —— 以下解析函数逐字迁自 sheet_converter（parse_lakesheet 内 print 改为
 #    静默返回 None，失败信息由 ConvertError 在 Backend 层统一报告）——
@@ -75,6 +90,8 @@ def parse_lakesheet(body: str) -> Optional[List[List[str]]]:
 
         return _extract_rows_from_sheet_json(sheet_json)
 
+    except ConvertError:
+        raise   # 解压超限（mar #10）等明确错误上抛，error 粒度报告
     except Exception:
         return None
 
@@ -93,17 +110,23 @@ def _decompress_sheet(sheet_bytes: bytes, sheet_str: str) -> Optional[dict]:
     Returns:
         解析后的 Python 对象，失败返回 None
     """
-    # 方案一：zlib 解压（lakesheet 最常见的压缩方式）
+    # 方案一：zlib 解压（lakesheet 最常见的压缩方式）；限长防解压炸弹（mar #10）
     try:
-        decompressed = zlib.decompress(sheet_bytes)
+        decompressed = _bounded_decompress(sheet_bytes, zlib.MAX_WBITS,
+                                           _MAX_DECOMPRESSED_BYTES)
         return json.loads(decompressed.decode("utf-8"))
+    except ConvertError:
+        raise   # 解压超限是明确错误，不静默降级到后续方案
     except Exception:
         pass
 
-    # 方案二：gzip 解压
+    # 方案二：gzip 解压（同样限长）
     try:
-        decompressed = gzip.decompress(sheet_bytes)
+        decompressed = _bounded_decompress(sheet_bytes, 16 + zlib.MAX_WBITS,
+                                           _MAX_DECOMPRESSED_BYTES)
         return json.loads(decompressed.decode("utf-8"))
+    except ConvertError:
+        raise
     except Exception:
         pass
 

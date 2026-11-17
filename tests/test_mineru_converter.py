@@ -351,3 +351,33 @@ def test_post_top_level_non_dict_raises(tmp_path, monkeypatch):
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, max_retries=1)
     with pytest.raises(ConvertError, match="非对象"):
         c.convert(pdf, tmp_path / "x.assets")
+
+
+def test_extract_zip_rejects_bomb_total_size(tmp_path, monkeypatch):
+    # mar #10：zip 成员 file_size 累计超限 → ConvertError，不进入解压
+    import io as _io
+    import zipfile as _zipfile
+    import xmd.backends.mineru as mod
+    monkeypatch.setattr(mod, "_MAX_ZIP_TOTAL_BYTES", 100)
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w") as z:
+        z.writestr("full.md", "x" * 200)   # 单成员即超测试上限
+    c = MinerUConverter(token="t", api="precision")
+    monkeypatch.setattr(MinerUConverter, "_get_bytes", lambda self, url: buf.getvalue())
+    with pytest.raises(ConvertError):
+        c._extract_zip("http://zip", tmp_path)
+
+
+def test_extract_zip_within_limit(tmp_path, monkeypatch):
+    # mar #10 回归：限额内 zip 正常解压取 md
+    import io as _io
+    import zipfile as _zipfile
+    import xmd.backends.mineru as mod
+    monkeypatch.setattr(mod, "_MAX_ZIP_TOTAL_BYTES", 1024 * 1024)
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w") as z:
+        z.writestr("full.md", "# ok")
+    c = MinerUConverter(token="t", api="precision")
+    monkeypatch.setattr(MinerUConverter, "_get_bytes", lambda self, url: buf.getvalue())
+    md, _imgs = c._extract_zip("http://zip", tmp_path)
+    assert md == "# ok"
