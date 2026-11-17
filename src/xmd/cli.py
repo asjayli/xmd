@@ -75,9 +75,20 @@ def main(argv: list[str] | None = None) -> int:
         # 提示 only 中源文件已不存在的条目（被 walk 过滤，静默忽略）。
         # 此处与 run() 内各 walk 一次：提示需在转换开始前给出（informational），
         # run 以自身 walk 为准；两次遍历的大库开销（秒级）相对转换耗时可接受。
+        from xmd.classifier import Category
         from xmd.walker import scan_input
-        exist = {str(e.rel_path) for i in inputs for e in scan_input(i).files}
-        missing_src = sorted(only - exist)
+        from xmd.writer import sanitize_filename
+        walked = [e for i in inputs for e in scan_input(i).files]
+        exist = {str(e.rel_path) for e in walked}
+        # mar #24：lakebook 展开后的虚拟任务（rel 以「归档名/」为前缀）不在
+        # walk 清单中，不属「源文件不存在」——为预警而去展开归档代价过大，
+        # 按归档名前缀排除（KISS；误报面仅剩归档内确实缺名的少数条目）。
+        book_prefixes = {
+            f"{sanitize_filename(e.rel_path.name.removesuffix('.lakebook'))}/"
+            for e in walked if e.category is Category.LAKEBOOK}
+        missing_src = sorted(
+            r for r in only - exist
+            if not any(r.startswith(p) for p in book_prefixes))
         if missing_src:
             preview = "、".join(missing_src[:5])
             suffix = "…" if len(missing_src) > 5 else ""

@@ -215,3 +215,28 @@ def test_cli_mixed_file_and_dir_inputs(tmp_path, tcp_pdf, monkeypatch):
     src.mkdir()
     main([str(src), str(tcp_pdf), "-o", str(tmp_path / "o")])
     assert captured["inputs"] == [src, tcp_pdf]
+
+
+def test_cli_retry_review_no_false_warning_for_virtual_paths(tmp_path, monkeypatch, capsys):
+    # mar #24：lakebook 虚拟路径 retry 不误报「源文件已不存在」；真实缺失仍提示
+    from conftest import make_lakebook
+    captured = {}
+
+    def fake_run(*a, **k):
+        captured.update(k)
+        return {"total": 0}
+
+    monkeypatch.setattr("xmd.cli.run", fake_run)
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "need-review.csv").write_text(
+        "﻿rel_path,chars,status\nbook/文档,5,need_review\nghost/x.md,5,need_review\n",
+        encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    make_lakebook(src / "book.lakebook", [],
+                  [{"title": "文档", "type": "DOC", "url": "d1", "level": 0}])
+    main([str(src), "-o", str(out), "--retry-review"])
+    err = capsys.readouterr().err
+    assert "源文件已不存在" in err and "ghost/x.md" in err   # 真实缺失仍预警
+    assert "book/文档" not in err   # 归档虚拟路径不误报
