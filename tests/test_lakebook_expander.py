@@ -1,5 +1,7 @@
 """lakebook 展开器测试：最小 tar fixtures 覆盖 uuid/level 双建树与异常路径。"""
 import io
+import json
+import os
 import tarfile
 
 import pytest
@@ -155,3 +157,40 @@ def test_run_traversal_lakebook_stays_in_output(tmp_path):
     for f in out.rglob("*"):
         if f.is_file():
             assert f.resolve().is_relative_to(root)
+
+
+def _outside_secret(name: str, tmp_base) -> Path:
+    """在 repo_dir 上两级（展开 tmp 之外）放置越界目标文件，模拟归档外敏感 json。"""
+    secret = tmp_base / f"{name}.json"
+    secret.write_text(json.dumps({"doc": {"type": "Doc", "format": "lake",
+                                          "body": "<p>机密</p>", "body_asl": ""}}),
+                      encoding="utf-8")
+    return secret
+
+
+def test_expand_url_escape_skipped(tmp_path):
+    # mar #3 PoC 回归：url 含 `..` 的 DOC 条目被跳过，不读取归档外文件，无异常外逸
+    # 展开 tmp 为 <systmp>/xmd_lakebook_*/<repo_id>，url ../../<name> 指向 <systmp>/<name>
+    import tempfile
+    from pathlib import Path
+    sys_tmp = Path(tempfile.gettempdir())
+    secret = _outside_secret(f"secret_mar3_{os.getpid()}", sys_tmp)
+    try:
+        p = tmp_path / "b.lakebook"
+        make_lakebook(p, [], [{"title": "逃", "type": "DOC",
+                               "url": f"../../{secret.stem}", "level": 0}])
+        assert _expand(p) == []   # 越界条目跳过（entries 为空），无异常
+    finally:
+        secret.unlink(missing_ok=True)
+
+
+def test_expand_url_absolute_path_skipped(tmp_path):
+    # mar #3：绝对路径 url 同样跳过（repo_dir / "/abs/x.json" 折叠为 /abs/x.json）
+    outside = _outside_secret(f"abs_mar3_{os.getpid()}", tmp_path)
+    try:
+        p = tmp_path / "b.lakebook"
+        make_lakebook(p, [], [{"title": "逃", "type": "DOC",
+                               "url": str(outside.with_suffix("")), "level": 0}])
+        assert _expand(p) == []
+    finally:
+        outside.unlink(missing_ok=True)

@@ -179,9 +179,16 @@ def expand_lakebook(archive: Path, *, download_image: bool = True,
         mtime = archive.stat().st_mtime
         entries: list[FileEntry] = []
         it = _iter_doc_entries_by_uuid(toc) if _use_uuid_tree(toc) else _iter_doc_entries_by_level(toc)
+        repo_resolved = repo_dir.resolve()
         for path_parts, title, url in it:
             raw = repo_dir / f"{url}.json"
-            if not raw.exists():
+            # mar #3：url 不可信（`..`/绝对路径可越出 repo_dir 读归档外任意
+            # *.json），resolve 后必须仍位于 repo_dir 内，越界与缺失同样跳过
+            try:
+                inside = raw.resolve().is_relative_to(repo_resolved)
+            except (OSError, ValueError):
+                inside = False
+            if not inside or not raw.exists():
                 continue   # 原行为：文档文件缺失时警告并跳过该条目
             doc = json.loads(raw.read_text(encoding="utf-8")).get("doc", {})
             is_sheet = doc.get("type", "") == TYPE_SHEET or doc.get("format", "") == "lakesheet"
