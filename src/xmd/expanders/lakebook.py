@@ -77,7 +77,7 @@ def _extract_tar(tar_file: Path, target_dir: Path) -> None:
 def _read_toc(repo_dir: Path) -> list:
     """读取 $meta.json（双层 JSON + tocYml YAML），返回 TOC 列表。
 
-    （mar #28：book_name 推导为死代码已删——输出目录名以归档文件名为权威，
+    （mar #28：知识库名推导为死代码已删——输出目录名以归档文件名为权威，
     知识库名从不参与路径计算。）
     """
     meta_file = json.loads((repo_dir / META_JSON).read_text(encoding="utf-8"))
