@@ -293,11 +293,12 @@ def _dispatch(tasks: list[Task], ctx: Ctx, jobs: int, output_root: Path) -> list
 
 
 def _expand_inputs(files: list[FileEntry], *, no_image: bool, convert_sheets: bool,
-                   sheet_format: str) -> tuple[list[FileEntry], list[Path], list[Result]]:
+                   sheet_format: str, tmp_base: Path) -> tuple[list[FileEntry], list[Path], list[Result]]:
     """展开容器条目（.lakebook）→ 虚拟 FileEntry。
 
     返回 (待转条目, 待清理 tmp 目录, 展开失败结果)。展开在主进程串行执行
     （tar 解压 IO 型）；损坏/恶意归档记 error 结果，不中断批量。
+    tmp_base：展开 tmp 基准目录（输出盘 .xmd-tmp，mar #16；存在容器条目时才创建）。
     """
     from xmd.expanders import ExpandError, expand_lakebook   # 延迟 import
     entries: list[FileEntry] = []
@@ -308,9 +309,11 @@ def _expand_inputs(files: list[FileEntry], *, no_image: bool, convert_sheets: bo
             entries.append(e)
             continue
         try:
+            tmp_base.mkdir(parents=True, exist_ok=True)
             sub, tmp = expand_lakebook(e.abs_path,
                                        download_image=not no_image,
-                                       sheet_format=sheet_format)
+                                       sheet_format=sheet_format,
+                                       tmp_base=tmp_base)
         except ExpandError as err:
             errors.append(Result(str(e.rel_path), "error", 0, 0, str(err)))
             continue
@@ -351,7 +354,8 @@ def run(source, output: Path, jobs: int = 4,
 
     entries, tmp_dirs, expand_errors = _expand_inputs(
         walked_files, no_image=no_image,
-        convert_sheets=convert_sheets, sheet_format=sheet_format)
+        convert_sheets=convert_sheets, sheet_format=sheet_format,
+        tmp_base=output / ".xmd-tmp")
 
     tasks = preprocess(entries, output)
     if only is not None:   # --retry-review：仅处理指定 rel_path 子集
@@ -362,9 +366,11 @@ def run(source, output: Path, jobs: int = 4,
     try:
         results = _dispatch(tasks, ctx, jobs, output)
     finally:
-        # 展开产生的 tmp 目录统一清理（dispatch 内 BrokenProcessPool 重启也不外逸）
+        # 展开产生的 tmp 目录统一清理（dispatch 内 BrokenProcessPool 重启也不外逸）；
+        # 基准目录 .xmd-tmp 一并移除（隐藏目录本身也不留在输出树，mar #16）
         for t in tmp_dirs:
             shutil.rmtree(t, ignore_errors=True)
+        shutil.rmtree(output / ".xmd-tmp", ignore_errors=True)
     duration = time.perf_counter() - start
 
     for r in expand_errors:   # 展开失败并入结果与日志

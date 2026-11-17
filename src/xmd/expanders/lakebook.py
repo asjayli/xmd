@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import shutil
 import tarfile
 import tempfile
@@ -52,10 +51,13 @@ def _extract_tar(tar_file: Path, target_dir: Path) -> None:
         for member in tar.getmembers():
             if member.issym() or member.islnk():
                 raise ExpandError(f"拒绝提取可疑链接成员: {member.name}")
+            if member.isdev():   # 字符/块设备与 FIFO（mar #11）
+                raise ExpandError(f"拒绝提取设备成员: {member.name}")
             member_path = os.path.abspath(os.path.join(base_dir, member.name))
             if os.path.commonpath([base_dir, member_path]) != base_dir:
                 raise ExpandError(f"拒绝提取逃逸目标目录的成员: {member.name}")
-        tar.extractall(target_dir)
+        # filter="data"：库层再拦一次绝对路径/链接/设备并剥离高危模式位（纵深防御）
+        tar.extractall(target_dir, filter="data")
 
 
 # ── 元数据解析（迁自 lakebook.metadata.read_toc_and_book_info）────────────────
@@ -163,10 +165,16 @@ def _iter_doc_entries_by_level(toc: list):
 # ── 展开主入口 ────────────────────────────────────────────────────────────────
 
 def expand_lakebook(archive: Path, *, download_image: bool = True,
-                    sheet_format: str = "csv") -> tuple[list[FileEntry], Path]:
-    """展开单个 .lakebook → 虚拟 FileEntry 列表 + tmp 目录（调用方负责清理）。"""
+                    sheet_format: str = "csv",
+                    tmp_base: Path | None = None) -> tuple[list[FileEntry], Path]:
+    """展开单个 .lakebook → 虚拟 FileEntry 列表 + tmp 目录（调用方负责清理）。
+
+    tmp 目录由 mkdtemp 独占创建（mar #11：不可预测、0700，杜绝 TOCTOU/symlink
+    竞争）；tmp_base 指定基准目录（runner 传输出根下 .xmd-tmp，mar #16：落输出
+    盘避免大归档驻留 tmpfs），None → 系统 tmp。
+    """
     archive = Path(archive)
-    tmp_dir = Path(tempfile.gettempdir()) / f"xmd_lakebook_{os.getpid()}_{random.randint(1000, 9999)}"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="xmd_lakebook_", dir=tmp_base))
     try:
         _extract_tar(archive, tmp_dir)
         # tar 包内通常有一个根子目录，找到它作为 repo_dir

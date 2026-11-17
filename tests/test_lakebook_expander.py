@@ -194,3 +194,53 @@ def test_expand_url_absolute_path_skipped(tmp_path):
         assert _expand(p) == []
     finally:
         outside.unlink(missing_ok=True)
+
+
+def test_expand_tmpdir_mkdtemp_under_base(tmp_path, lb):
+    # mar #11+#16：tmp 由 mkdtemp 独占创建（0700），位于调用方指定基准目录
+    base = tmp_path / "base"
+    base.mkdir()
+    entries, tmp = expand_lakebook(lb, tmp_base=base)
+    import shutil
+    try:
+        assert tmp.parent == base
+        assert tmp.name.startswith("xmd_lakebook_")
+        assert tmp.stat().st_mode & 0o777 == 0o700   # mkdtemp 独占语义
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_expand_fifo_member_rejected(tmp_path):
+    # mar #11：设备/FIFO 成员拒绝提取
+    p = tmp_path / "dev.lakebook"
+    with tarfile.open(p, "w") as tf:
+        ti = tarfile.TarInfo("123/fifo")
+        ti.type = tarfile.FIFOTYPE
+        tf.addfile(ti)
+    with pytest.raises(ExpandError, match="设备"):
+        expand_lakebook(p)
+
+
+def test_run_tmpdir_on_output_disk_and_cleaned(tmp_path, monkeypatch):
+    # mar #16：runner 把展开 tmp 基准目录指定为输出盘 .xmd-tmp；run 结束无残留
+    import tempfile
+    from pathlib import Path
+    import xmd.expanders as expmod
+    from xmd.runner import run
+    seen = {}
+    real = expmod.expand_lakebook
+
+    def spy(archive, **kw):
+        seen["tmp_base"] = kw.get("tmp_base")
+        return real(archive, **kw)
+
+    monkeypatch.setattr(expmod, "expand_lakebook", spy)
+    src = tmp_path / "src"
+    src.mkdir()
+    make_lakebook(src / "book.lakebook", [{"url": "d1", "doc": DOC}],
+                  [{"title": "文档", "type": "DOC", "url": "d1", "level": 0, "uuid": "d1"}])
+    out = tmp_path / "out"
+    run(src, out, jobs=1, min_chars=5)
+    assert seen["tmp_base"] == out / ".xmd-tmp"   # 落输出盘而非系统 tmpfs
+    assert not (out / ".xmd-tmp").exists()        # run 结束清理基准目录
+    assert not any(Path(tempfile.gettempdir()).glob("xmd_lakebook_*"))
