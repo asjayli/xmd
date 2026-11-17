@@ -273,3 +273,21 @@ def test_expand_single_corrupt_doc_skipped(tmp_path):
     s = run(tmp_path, out, jobs=1, min_chars=1)
     assert s["error"] == 0 and s["ok"] == 1
     assert (out / "book" / "好文档.md").exists()
+
+
+def test_extract_tar_single_pass_cleans_partial(tmp_path):
+    # mar #17：单遍解压下，恶意成员位于好成员之后时，半解压状态须清理
+    from xmd.expanders.lakebook import _extract_tar
+    p = tmp_path / "evil.lakebook"
+    with tarfile.open(p, "w") as tf:
+        b = b"hello"
+        ti = tarfile.TarInfo("good.txt")
+        ti.size = len(b)
+        tf.addfile(ti, io.BytesIO(b))
+        ti2 = tarfile.TarInfo("../../escape.txt")
+        ti2.size = len(b)
+        tf.addfile(ti2, io.BytesIO(b))
+    target = tmp_path / "target"
+    with pytest.raises(ExpandError):
+        _extract_tar(p, target)
+    assert not target.exists() or not any(target.iterdir())   # 无半解压残留

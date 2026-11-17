@@ -34,31 +34,36 @@ class ExpandError(Exception):
     """容器展开失败（损坏/恶意归档、元数据缺失等）。"""
 
 
-# ── tar 安全解压（迁自 lakebook.utils.extract_tar，校验逻辑逐字保留）──────────
+# ── tar 安全解压（迁自 lakebook.utils.extract_tar；mar #17 改单遍流式）───────
 
 def _extract_tar(tar_file: Path, target_dir: Path) -> None:
-    """解压 tar 归档到目标目录。
+    """解压 tar 归档到目标目录（单遍流式：逐成员校验通过即提取，mar #17）。
 
-    安全性：提取前逐一校验每个成员解析后的绝对路径必须落在 target_dir 之内
-    （防止 `../` 或绝对路径形式的路径穿越），并拒绝符号链接 / 硬链接成员
-    （防止通过链接指向归档外的敏感文件）。全部成员校验通过后才整体提取。
+    安全性：逐成员校验解析后的绝对路径必须落在 target_dir 之内（防止 `../`
+    或绝对路径形式的路径穿越），并拒绝符号链接 / 硬链接 / 设备成员（防止
+    通过链接或设备节点指向归档外）。任一成员校验失败：清理已解出的部分并
+    抛 ExpandError（安全语义与两遍预检版等价，tar.gz 不再全流解压两次）。
+    filter="data"：库层再拦一次并剥离高危模式位（纵深防御）。
     """
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
 
     base_dir = os.path.abspath(target_dir)
 
-    with tarfile.open(tar_file) as tar:
-        for member in tar.getmembers():
-            if member.issym() or member.islnk():
-                raise ExpandError(f"拒绝提取可疑链接成员: {member.name}")
-            if member.isdev():   # 字符/块设备与 FIFO（mar #11）
-                raise ExpandError(f"拒绝提取设备成员: {member.name}")
-            member_path = os.path.abspath(os.path.join(base_dir, member.name))
-            if os.path.commonpath([base_dir, member_path]) != base_dir:
-                raise ExpandError(f"拒绝提取逃逸目标目录的成员: {member.name}")
-        # filter="data"：库层再拦一次绝对路径/链接/设备并剥离高危模式位（纵深防御）
-        tar.extractall(target_dir, filter="data")
+    try:
+        with tarfile.open(tar_file) as tar:
+            for member in tar:   # 流式逐成员（不预读整个成员表）
+                if member.issym() or member.islnk():
+                    raise ExpandError(f"拒绝提取可疑链接成员: {member.name}")
+                if member.isdev():   # 字符/块设备与 FIFO（mar #11）
+                    raise ExpandError(f"拒绝提取设备成员: {member.name}")
+                member_path = os.path.abspath(os.path.join(base_dir, member.name))
+                if os.path.commonpath([base_dir, member_path]) != base_dir:
+                    raise ExpandError(f"拒绝提取逃逸目标目录的成员: {member.name}")
+                tar.extract(member, target_dir, filter="data")
+    except ExpandError:
+        shutil.rmtree(target_dir, ignore_errors=True)   # 半解压状态清理
+        raise
 
 
 # ── 元数据解析（迁自 lakebook.metadata.read_toc_and_book_info）────────────────
