@@ -69,6 +69,10 @@ ok · skipped（续传跳过）· error · need_review · copied · collision ·
 - MinerU 每日免费额度有限：额度即停 + 跨天续传（--retry-review）
 - 不转音频、不解压普通压缩包：原样复制
 - 跳过隐藏文件（. 开头）
+- CSV 公式注入防御：`= + - @` 开头的单元格落盘加 `'` 前缀，纯文本消费方会看到该前缀
+- MinerU `--mineru-rate` 为全局速率按 worker 均分（`rate//jobs`，向下取整），实际总速率可能略低于设定
+- 表格解压上限 64MB/文档、zip 累计 1GB：超限记 error 不转换
+- 展开期 doc/sheet 分类为正则轻量探测（后端 json 解析为权威），极端构造内容可能先按错误类别路由再由后端记 error
 
 ## 开发
 ```bash
