@@ -21,10 +21,9 @@ class MarkdownConverter:
         silence_pdfminer()
         self._md = MarkItDown()
 
-    def convert(self, abs_path: Path, assets_dir: Path,
-                task: Task | None = None) -> ConvertResult:
+    def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
         try:
-            result = self._md.convert(str(abs_path))
+            result = self._md.convert(str(source))
         except Exception as e:  # markitdown 各类异常统一包装
             raise ConvertError(f"{type(e).__name__}: {e}") from e
         text = result.text_content or ""

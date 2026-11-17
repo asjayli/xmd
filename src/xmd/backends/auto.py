@@ -19,9 +19,8 @@ class AutoConverter:
         self._md = MarkdownConverter()
         self._mineru = MinerUConverter(**(mineru_opts or {}))   # api=auto 内部再路由
 
-    def convert(self, abs_path: Path, assets_dir: Path,
-                task: Task | None = None) -> ConvertResult:
-        backend, _ = classify_pdf(abs_path)
+    def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
+        backend, _ = classify_pdf(source)
         if backend == "mineru":
-            return self._mineru.convert(abs_path, assets_dir)
-        return self._md.convert(abs_path, assets_dir)
+            return self._mineru.convert(source, assets_dir, task)
+        return self._md.convert(source, assets_dir, task)

@@ -14,13 +14,13 @@ from xmd.normalizer import normalize
 
 
 class PdfInspectorConverter:
-    def convert(self, abs_path: Path, assets_dir: Path, task: Task | None = None) -> ConvertResult:
+    def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
         try:
             import pdf_inspector   # 延迟 import（可选依赖）
         except ImportError as e:
             raise ConvertError("pdf-inspector 未安装：pip install pdf-inspector") from e
         try:
-            res = pdf_inspector.process_pdf(str(abs_path))
+            res = pdf_inspector.process_pdf(str(source))
         except Exception as e:
             raise ConvertError(f"{type(e).__name__}: {e}") from e
         md = getattr(res, "markdown", "") or ""

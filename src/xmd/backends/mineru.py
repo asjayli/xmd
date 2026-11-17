@@ -59,15 +59,15 @@ class MinerUConverter:
         self._last_request = 0.0
 
     # ---- 主入口 ----
-    def convert(self, abs_path: Path, assets_dir: Path, task: Task | None = None) -> ConvertResult:
-        api = self._resolve_api(abs_path)
+    def convert(self, source: Path, assets_dir: Path, task: Task) -> ConvertResult:
+        api = self._resolve_api(source)
         if api == "precision":
             self._require_token()
-            self._check_pages(abs_path)                       # >200 页 → ConvertError（-60006 省）
+            self._check_pages(source)                         # >200 页 → ConvertError（-60006 省）
             with TemporaryDirectory() as td:
-                md, images_dir = self._precision(abs_path, Path(td))
+                md, images_dir = self._precision(source, Path(td))
                 return self._assemble(md, images_dir, assets_dir, handled=True)
-        md = self._agent(abs_path)                            # agent（免费，≤20 页/≤10MB）
+        md = self._agent(source)                              # agent（免费，≤20 页/≤10MB）
         return ConvertResult(body=normalize(md), handled_images=False)
 
     def _resolve_api(self, pdf: Path) -> str:

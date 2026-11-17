@@ -8,6 +8,16 @@ import requests
 import xmd.backends.mineru as mmod
 from xmd.model import ConvertError, ConvertResult
 from xmd.backends.mineru import MinerUConverter
+from pathlib import Path
+
+
+def _task(path, tmp_path):
+    """构造最小 Task（mar #32 后协议 task 必填）。"""
+    from xmd.classifier import Category
+    from xmd.model import FileEntry, Task
+    e = FileEntry(Path(path.name), path, Category.NOTE_PDF)
+    return Task(e, tmp_path / "out.md", tmp_path / "out.assets", False)
+
 
 
 class FakeResp:
@@ -74,7 +84,7 @@ def test_precision_success(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "get", get)
 
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0)
-    r = c.convert(pdf, assets)
+    r = c.convert(pdf, assets, _task(pdf, tmp_path))
     assert isinstance(r, ConvertResult)
     assert r.handled_images is True
     assert (assets / "a.jpg").exists()
@@ -107,7 +117,7 @@ def test_agent_success(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "get", get)
 
     c = MinerUConverter(token=None, api="agent", rate_per_min=0, poll_interval=0)
-    r = c.convert(pdf, tmp_path / "x.assets")
+    r = c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert r.handled_images is False
     assert "正文" in r.body
 
@@ -123,7 +133,7 @@ def test_agent_needs_no_token(tmp_path, monkeypatch):
         json_data={"code": 0, "data": {"state": "done", "markdown_url": "http://md"}})
         if "agent/parse" in url else FakeResp(text="ok"))
     c = MinerUConverter(token=None, api="agent", rate_per_min=0, poll_interval=0)
-    c.convert(pdf, tmp_path / "x.assets")   # 不抛即通过
+    c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))   # 不抛即通过
 
 
 # ---- 错误码分级 ----
@@ -139,7 +149,7 @@ def test_daily_limit_raises_marked(tmp_path, monkeypatch):
             {"state": "failed", "err_code": -60018, "err_msg": "daily limit"}]}}))
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0)
     with pytest.raises(ConvertError) as ei:
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert "MINERU_DAILY_LIMIT" in str(ei.value)
 
 
@@ -151,7 +161,7 @@ def test_token_error_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(mmod.time, "sleep", lambda s: None)
     c = MinerUConverter(token="bad", api="precision", rate_per_min=0, max_retries=2)
     with pytest.raises(ConvertError, match="Token"):
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
 
 
 # ---- 前置校验 ----
@@ -161,7 +171,7 @@ def test_precision_requires_token(tmp_path):
     _pdf(pdf)
     c = MinerUConverter(token=None, api="precision")
     with pytest.raises(ConvertError, match="Token"):
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
 
 
 def test_precision_pages_exceed(tmp_path):
@@ -169,7 +179,7 @@ def test_precision_pages_exceed(tmp_path):
     _pdf(pdf, pages=3)
     c = MinerUConverter(token="t", api="precision", max_pages=2)
     with pytest.raises(ConvertError, match="页数超限"):
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
 
 
 # ---- 429 退避 ----
@@ -195,7 +205,7 @@ def test_post_429_then_success(tmp_path, monkeypatch):
     monkeypatch.setattr(mmod.time, "sleep", lambda s: None)
 
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0, max_retries=3)
-    c.convert(pdf, tmp_path / "x.assets")
+    c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert calls[0] == 2   # 429 后重试成功
 
 
@@ -221,7 +231,7 @@ def test_post_non_json_raises(tmp_path, monkeypatch):
         status=200, text="<html>gateway error</html>"))
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, max_retries=1)
     with pytest.raises(ConvertError, match="非 JSON"):
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
 
 
 def test_assemble_rewrites_any_image_path(tmp_path, monkeypatch):
@@ -247,7 +257,7 @@ def test_assemble_rewrites_any_image_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr(requests, "get", get)
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0)
-    r = c.convert(pdf, assets)
+    r = c.convert(pdf, assets, _task(pdf, tmp_path))
     assert "./x.assets/pic.png" in r.body
     assert "some/deep/path/pic.png" not in r.body
     assert (assets / "pic.png").exists()
@@ -265,7 +275,7 @@ def test_poll_top_level_daily_limit(tmp_path, monkeypatch):
     c = MinerUConverter(token="t", api="precision", rate_per_min=0,
                         poll_interval=0, poll_timeout=2)
     with pytest.raises(ConvertError) as ei:
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert "MINERU_DAILY_LIMIT" in str(ei.value)
 
 
@@ -281,7 +291,7 @@ def test_poll_data_null_does_not_crash(tmp_path, monkeypatch):
     c = MinerUConverter(token=None, api="agent", rate_per_min=0,
                         poll_interval=0, poll_timeout=1)
     with pytest.raises(ConvertError, match="轮询超限"):
-        c.convert(pdf, tmp_path / "x.assets")   # 容错重试至超时，而非 AttributeError 崩溃
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))   # 容错重试至超时，而非 AttributeError 崩溃
 
 
 def test_assemble_image_name_with_regex_chars(tmp_path, monkeypatch):
@@ -307,7 +317,7 @@ def test_assemble_image_name_with_regex_chars(tmp_path, monkeypatch):
 
     monkeypatch.setattr(requests, "get", get)
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0)
-    r = c.convert(pdf, assets)
+    r = c.convert(pdf, assets, _task(pdf, tmp_path))
     assert "./x.assets/img (1).png" in r.body
     assert "deep/img (1).png" not in r.body
     assert (assets / "img (1).png").exists()
@@ -336,7 +346,7 @@ def test_assemble_image_name_with_backslash(tmp_path, monkeypatch):
 
     monkeypatch.setattr(requests, "get", get)
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, poll_interval=0)
-    r = c.convert(pdf, assets)
+    r = c.convert(pdf, assets, _task(pdf, tmp_path))
     assert "./x.assets/img\\1.png" in r.body
     assert "p/img\\1.png" not in r.body
     assert (assets / "img\\1.png").exists()
@@ -350,7 +360,7 @@ def test_post_top_level_non_dict_raises(tmp_path, monkeypatch):
         status=200, json_data=[1, 2], text="[1,2]"))
     c = MinerUConverter(token="t", api="precision", rate_per_min=0, max_retries=1)
     with pytest.raises(ConvertError, match="非对象"):
-        c.convert(pdf, tmp_path / "x.assets")
+        c.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
 
 
 def test_extract_zip_rejects_bomb_total_size(tmp_path, monkeypatch):

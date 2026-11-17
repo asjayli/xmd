@@ -1,5 +1,15 @@
 from xmd.backends.auto import AutoConverter
 from xmd.model import ConvertResult
+from pathlib import Path
+
+
+def _task(path, tmp_path):
+    """构造最小 Task（mar #32 后协议 task 必填）。"""
+    from xmd.classifier import Category
+    from xmd.model import FileEntry, Task
+    e = FileEntry(Path(path.name), path, Category.NOTE_PDF)
+    return Task(e, tmp_path / "out.md", tmp_path / "out.assets", False)
+
 
 
 def test_routes_complex_to_mineru(tmp_path, monkeypatch):
@@ -12,7 +22,7 @@ def test_routes_complex_to_mineru(tmp_path, monkeypatch):
         def __init__(self, **k):
             pass
 
-        def convert(self, p, a):
+        def convert(self, p, a, task=None):
             return ConvertResult(body="from mineru", handled_images=True)
 
     class FakeMD:
@@ -22,7 +32,7 @@ def test_routes_complex_to_mineru(tmp_path, monkeypatch):
     monkeypatch.setattr("xmd.backends.auto.MinerUConverter", FakeMineru)
     monkeypatch.setattr("xmd.backends.auto.MarkdownConverter", FakeMD)
 
-    r = AutoConverter().convert(pdf, tmp_path / "x.assets")
+    r = AutoConverter().convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert r.body == "from mineru"
     assert r.handled_images is True
 
@@ -41,13 +51,13 @@ def test_routes_simple_to_markitdown(tmp_path, monkeypatch):
         def __init__(self):
             pass
 
-        def convert(self, p, a):
+        def convert(self, p, a, task=None):
             return ConvertResult(body="from md", handled_images=False)
 
     monkeypatch.setattr("xmd.backends.auto.MinerUConverter", FakeMineru)
     monkeypatch.setattr("xmd.backends.auto.MarkdownConverter", FakeMD)
 
-    r = AutoConverter().convert(pdf, tmp_path / "x.assets")
+    r = AutoConverter().convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert r.body == "from md"
     assert r.handled_images is False
 
@@ -71,5 +81,5 @@ def test_auto_probes_pdf_once(tmp_path, monkeypatch):
     # 失败（伪 PDF）抛 ConvertError——探测计数在此之前已完成
     import pytest
     with pytest.raises(ConvertError):
-        conv.convert(pdf, tmp_path / "x.assets")
+        conv.convert(pdf, tmp_path / "x.assets", _task(pdf, tmp_path))
     assert calls["n"] == 1   # 修复前 classify_pdf + mineru_api_for 各探测一次 = 2
