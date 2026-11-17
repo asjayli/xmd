@@ -141,6 +141,7 @@ def _lift_embedded_images_in(soup) -> None:
         if blocker.name in _BLOCKING_CELL:
             anchor = blocker
             fallback = None
+            found_table = False
             node = blocker
             for _ in range(16):  # 防御性深度上限
                 parent = node.parent
@@ -148,11 +149,16 @@ def _lift_embedded_images_in(soup) -> None:
                     break
                 if parent.name == "table":
                     anchor = parent
+                    found_table = True
                     break
                 if fallback is None and parent.name in _TABLE_ROOT:
                     fallback = parent
                 node = parent
-            else:
+            # 未找到 table 根（含到达文档根的退出路径）→ 回落到最近的
+            # tbody/thead/tfoot，再退到单元格自身。mar #23：原 for-else 只在
+            # 耗尽深度上限时应用回落，文档根 break 路径漏掉 → 锚点退化为
+            # 单元格，p 落入 tr 形成非法结构
+            if not found_table:
                 anchor = fallback or anchor
         else:
             anchor = blocker

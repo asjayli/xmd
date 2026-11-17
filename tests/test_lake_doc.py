@@ -311,3 +311,17 @@ def test_download_retry_succeeds_after_first_failure(tmp_path, monkeypatch):
     r = LakeDocBackend().convert(src, assets, _task(tmp_path, {"download_image": True}))
     assert (assets / "img_001.png").read_bytes() == b"PNG"   # 重试成功落盘
     assert sleeps == [1]    # 第 1 次失败后退避 1s（桩记录，无真睡）
+
+
+def test_lift_bare_tbody_fragment_anchor():
+    # mar #23 PoC 回归：无 table 外壳的裸 tbody 片段，提升锚点应为 tbody
+    # （片段末尾）而非单元格内（p 落进 tr 属非法结构）
+    from bs4 import BeautifulSoup
+    from xmd.backends.lake_doc import _lift_embedded_images_in
+    html = '<tbody><tr><td>a</td><td><img src="https://x/1.png"/></td></tr></tbody>'
+    soup = BeautifulSoup(html, "html.parser")
+    _lift_embedded_images_in(soup)
+    tr = soup.find("tr")
+    p = soup.find("p")
+    assert p is not None and p.parent is not tr          # p 不在 tr 内
+    assert p.parent is soup or p.parent.name == "tbody"  # 锚定在片段层
