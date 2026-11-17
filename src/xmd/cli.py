@@ -47,7 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mineru-poll-timeout", type=int, default=600, help="单任务轮询超时(秒)")
     p.add_argument("--mineru-max-pages", type=int, default=200,
                    help="Precision 单文件超此页数 skip（省额度）")
-    p.add_argument("--mineru-rate", type=int, default=20, help="每分钟最多请求数（限流）")
+    p.add_argument("--mineru-rate", type=int, default=20,
+                   help="每分钟最多请求数（全局速率，多 worker 自动均分）")
     return p
 
 

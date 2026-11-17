@@ -404,8 +404,14 @@ def run(source, output: Path, jobs: int = 4,
     tasks = preprocess(entries, output)
     if only is not None:   # --retry-review：仅处理指定 rel_path 子集
         tasks = [t for t in tasks if str(t.entry.rel_path) in only]
+    ctx_opts = backend_opts
+    if backend in ("mineru", "auto") and backend_opts and backend_opts.get("rate_per_min"):
+        # mar #15：rate_per_min 为全局速率语义 → 每 worker 按配额均分限流
+        # （每 worker 独立 _throttle，不拆分则实际速率放大 jobs 倍）
+        ctx_opts = dict(backend_opts)
+        ctx_opts["rate_per_min"] = max(1, ctx_opts["rate_per_min"] // jobs)
     ctx = Ctx(force=force, min_chars=min_chars, max_pdf_mb=max_pdf_mb,
-              backend=backend, backend_opts=backend_opts, no_image=no_image)
+              backend=backend, backend_opts=ctx_opts, no_image=no_image)
     start = time.perf_counter()
     try:
         results = _dispatch(tasks, ctx, jobs, output)

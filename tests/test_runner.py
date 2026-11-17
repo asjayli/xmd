@@ -435,3 +435,29 @@ def test_run_only_updates_touched_rows_in_place(tmp_path):
     a_rows = [row for row in rows if row["rel_path"] == "a.md"]
     assert len(a_rows) == 1                       # 行唯一（替换而非追加）
     assert a_rows[0]["status"] == "need_review"   # 仍需复核 → 行更新保留
+
+
+def test_run_mineru_rate_split_across_jobs(tmp_path, monkeypatch):
+    # mar #15：rate_per_min 是全局速率语义，多 worker 时按 jobs 均分下发
+    captured = {}
+
+    def fake_dispatch(tasks, ctx, jobs, output_root):
+        captured["ctx"] = ctx
+        return []
+
+    monkeypatch.setattr("xmd.runner._dispatch", fake_dispatch)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("x" * 80, encoding="utf-8")
+    run(src, tmp_path / "o1", jobs=4, backend="mineru",
+        backend_opts={"token": "t", "rate_per_min": 20})
+    assert captured["ctx"].backend_opts["rate_per_min"] == 5
+    assert captured["ctx"].backend_opts["token"] == "t"   # 其余 opts 原样下发
+    run(src, tmp_path / "o2", jobs=1, backend="mineru",
+        backend_opts={"token": "t", "rate_per_min": 20})
+    assert captured["ctx"].backend_opts["rate_per_min"] == 20   # 单 worker 不变
+    run(src, tmp_path / "o3", jobs=4, backend="auto",
+        backend_opts={"token": "t", "rate_per_min": 8})
+    assert captured["ctx"].backend_opts["rate_per_min"] == 2    # auto 同样均分
+    run(src, tmp_path / "o4", jobs=4)                           # 非 mineru 后端不动
+    assert captured["ctx"].backend_opts is None
