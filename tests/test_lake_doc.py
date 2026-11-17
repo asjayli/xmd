@@ -219,3 +219,23 @@ def test_backend_image_doc_single_body_parse(tmp_path, monkeypatch):
     LakeDocBackend().convert(src, tmp_path / "a.assets", _task(tmp_path))
     body_parses = [h for h in calls if isinstance(h, str) and "正文标记Xy7" in h]
     assert len(body_parses) == 1
+
+
+def test_download_write_failure_branch(tmp_path, monkeypatch):
+    # mar #19：写盘失败（OSError）走 write_fail 分支，正文给写入失败提示
+    from xmd.backends.lake_doc import _download_image_to_file
+
+    class FakeResp:
+        content = b"PNG"
+        headers = {"Content-Type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("xmd.backends.lake_doc._download_image_with_retry",
+                        lambda src: FakeResp())
+    assets = tmp_path / "a.assets"
+    assets.mkdir()
+    (assets / "img_001.png").mkdir()   # 同名目录占位 → write_bytes 必然 OSError
+    outcome = _download_image_to_file(1, "https://x/1.png", assets)
+    assert outcome[0] == "write_fail" and isinstance(outcome[2], OSError)

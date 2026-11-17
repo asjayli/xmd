@@ -357,11 +357,28 @@ def _download_image_with_retry(src: str):
     raise last_error
 
 
+def _download_image_to_file(no: int, src: str, assets_dir: Path) -> tuple:
+    """下载单图并立即写盘（mar #19：字节不进聚合容器，单图峰值）。
+
+    返回 ("ok", fname) | ("write_fail", src, OSError)——下载失败异常由
+    调用方统一捕获。编号 no 预知，扩展名取响应 Content-Type。
+    """
+    resp = _download_image_with_retry(src)
+    ext = CONTENT_TYPE_TO_EXTENSION.get(resp.headers.get("Content-Type", ""), ".jpg")
+    fname = f"img_{no:03d}{ext}"
+    try:
+        (assets_dir / fname).write_bytes(resp.content)
+    except OSError as e:
+        return ("write_fail", src, e)
+    return ("ok", fname)
+
+
 def download_images_to_soup(soup, assets_dir: Path) -> None:
     """下载 soup 中所有外链图片到 assets_dir（img_NNN.ext），src 原位改相对引用。
 
     失败（重试 IMAGE_DOWNLOAD_MAX_ATTEMPTS 次）→ 原位写 [图片缺失：原因] URL 文本。
-    并发下载仅获取字节；写盘与 HTML 改写串行（编号/文件名稳定）。
+    即下即写：future 内直接落盘（mar #19，百图文档不再全部字节驻留内存）；
+    HTML 改写在全部 future 完成后串行进行（编号/文件名稳定）。
     soup 原位修改（mar #6：body 只解析一次，本函数不再独立 parse）。
     """
     img_tags = soup.find_all("img")
@@ -371,7 +388,8 @@ def download_images_to_soup(soup, assets_dir: Path) -> None:
         return
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    # results[no] -> ("ok", content, ext) | ("fail", src, error)
+    # results[no] -> ("ok", fname) | ("write_fail", src, err) | ("fail", src, err)
+    # 不含图片字节（mar #19）
     results: dict[int, tuple] = {}
     # SSRF 预检（mar #9）：内网/非法协议地址不进入下载线程，按失败路径提示
     downloadable = []
@@ -382,16 +400,13 @@ def download_images_to_soup(soup, assets_dir: Path) -> None:
             downloadable.append((no, image, src))
     with ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_MAX_WORKERS) as executor:
         future_to_no = {
-            executor.submit(_download_image_with_retry, src): (no, src)
+            executor.submit(_download_image_to_file, no, src, assets_dir): (no, src)
             for no, _image, src in downloadable
         }
         for future in as_completed(future_to_no):
             no, src = future_to_no[future]
             try:
-                resp = future.result()
-                ext = CONTENT_TYPE_TO_EXTENSION.get(
-                    resp.headers.get("Content-Type", ""), ".jpg")
-                results[no] = ("ok", resp.content, ext)
+                results[no] = future.result()
             except Exception as e:
                 results[no] = ("fail", src, e)
 
@@ -399,18 +414,14 @@ def download_images_to_soup(soup, assets_dir: Path) -> None:
     for no, image, src in tasks:
         outcome = results.get(no)
         if outcome and outcome[0] == "ok":
-            _, content, ext = outcome
-            fname = f"img_{no:03d}{ext}"
-            try:
-                (assets_dir / fname).write_bytes(content)
-                image["src"] = prefix + fname
-                # 清理语雀默认的无意义图片 alt/title（恒为 "image"，无语义价值）
-                if (image.get("alt") or "").strip() == "image":
-                    image["alt"] = ""
-                if (image.get("title") or "").strip() == "image":
-                    del image["title"]
-            except OSError:
-                image.replace_with(soup.new_string(f"\n[图片缺失：写入失败] {src}\n"))
+            image["src"] = prefix + outcome[1]
+            # 清理语雀默认的无意义图片 alt/title（恒为 "image"，无语义价值）
+            if (image.get("alt") or "").strip() == "image":
+                image["alt"] = ""
+            if (image.get("title") or "").strip() == "image":
+                del image["title"]
+        elif outcome and outcome[0] == "write_fail":
+            image.replace_with(soup.new_string(f"\n[图片缺失：写入失败] {src}\n"))
         else:
             reason = f"下载失败：{outcome[2]}" if outcome else "下载失败，请手动处理"
             image.replace_with(soup.new_string(f"\n[图片缺失：{reason}] {src}\n"))
