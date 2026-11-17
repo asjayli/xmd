@@ -26,6 +26,7 @@ import requests
 
 from xmd.model import ConvertError, ConvertResult, Task
 from xmd.normalizer import normalize
+from xmd.writer import asset_ref
 from xmd.router import mineru_api_for
 
 _BASE = "https://mineru.net"
@@ -268,7 +269,6 @@ class MinerUConverter:
         image_refs: list[str] = []
         if images_dir and images_dir.exists():
             assets_dir.mkdir(parents=True, exist_ok=True)
-            new_prefix = f"./{assets_dir.name}/"
             for img in sorted(images_dir.iterdir()):
                 if not img.is_file():
                     continue
@@ -277,7 +277,8 @@ class MinerUConverter:
                 except OSError:
                     continue   # 单图复制失败 → 跳过，不影响整体
                 # 按 basename 重写 md 中任意路径的图片引用（不假定固定 images/ 前缀）
+                ref = asset_ref(assets_dir, img.name)
                 pat = re.compile(r"(!\[[^\]]*\]\()[^)]*?" + re.escape(img.name) + r"(\))")
-                md = pat.sub(lambda m: m.group(1) + new_prefix + img.name + m.group(2), md)
-                image_refs.append(new_prefix + img.name)
+                md = pat.sub(lambda m: m.group(1) + ref + m.group(2), md)
+                image_refs.append(ref)
         return ConvertResult(body=normalize(md), image_refs=image_refs, handled_images=handled)

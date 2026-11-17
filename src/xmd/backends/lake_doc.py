@@ -21,7 +21,7 @@ from markdownify import markdownify as md_convert
 from requests import get as http_get
 
 from xmd.model import ConvertError, ConvertResult, Task
-from xmd.writer import pretty_md
+from xmd.writer import asset_ref, pretty_md
 
 IMAGE_DOWNLOAD_TIMEOUT = 10
 IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3
@@ -410,11 +410,10 @@ def download_images_to_soup(soup, assets_dir: Path) -> None:
             except Exception as e:
                 results[no] = ("fail", src, e)
 
-    prefix = f"./{assets_dir.name}/"
     for no, image, src in tasks:
         outcome = results.get(no)
         if outcome and outcome[0] == "ok":
-            image["src"] = prefix + outcome[1]
+            image["src"] = asset_ref(assets_dir, outcome[1])
             # 清理语雀默认的无意义图片 alt/title（恒为 "image"，无语义价值）
             if (image.get("alt") or "").strip() == "image":
                 image["alt"] = ""

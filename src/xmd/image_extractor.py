@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pymupdf
 
+from xmd.writer import asset_ref
+
 
 class ImageError(Exception):
     pass
@@ -52,7 +54,7 @@ def extract_images(
                 idx = len(results) + 1
                 fname = f"img_{idx:03d}.{ext}"
                 (assets_dir / fname).write_bytes(info["image"])
-                results.append(ExtractedImage(f"./{assets_dir.name}/{fname}", page_idx))
+                results.append(ExtractedImage(asset_ref(assets_dir, fname), page_idx))
     finally:
         doc.close()
     return results

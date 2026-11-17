@@ -77,6 +77,14 @@ def assets_dir_for(output_path: Path) -> Path:
     return output_path.parent / f"{output_path.stem}.assets"
 
 
+def asset_ref(assets_dir: Path, filename: str) -> str:
+    """Markdown 相对图片引用（mar #31 单一约定源）：`./{assets名}/{文件名}`。
+
+    PDF 抽图 / 语雀图片下载 / MinerU 图片整合三处共用，保证前缀与命名一致。
+    """
+    return f"./{assets_dir.name}/{filename}"
+
+
 def write_markdown(output_path: Path, title: str, body: str, image_refs: list[str]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     parts = [f"# {title}".strip(), "", body.strip()]
